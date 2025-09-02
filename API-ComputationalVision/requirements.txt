@@ -1,0 +1,12 @@
+uvicorn
+fastapi
+pydantic
+dependency-injector
+httpx
+httpx[http2]
+databases
+asyncpg
+pymysql
+oracledb
+pyodbc
+python-tds
