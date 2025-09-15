@@ -14,7 +14,7 @@ class VisionController(ControllerBase):
     """REST endpoints exposing YOLOv12 object detection capabilities."""
 
     def __init__(self) -> None:
-        super().__init__(prefix="vision", tags=["YOLOv12"])
+        super().__init__()
 
         @self.router.post(
             "/detect-image",

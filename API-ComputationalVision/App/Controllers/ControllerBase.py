@@ -14,4 +14,4 @@ class ControllerBase:
         else:
             tags.append(class_name)
 
-        self.router = APIRouter(prefix=prefix, tags=tags)
+        self.router = APIRouter(prefix=prefix.lower(), tags=tags)
