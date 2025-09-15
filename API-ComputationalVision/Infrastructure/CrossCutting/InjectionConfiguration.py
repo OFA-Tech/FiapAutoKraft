@@ -4,6 +4,7 @@ from Domain.Utils import Utils
 from Infrastructure.Data.Api.DefaultApiAccess import DefaultApiAccess
 from Infrastructure.Data.Database.DefaultDatabaseAccess import DefaultDatabaseAccess
 from Services.ApplicationServices.HealthCheckServices import HealthCheckServices
+from Services.ApplicationServices.YoloV12DetectionService import YoloV12DetectionService
 
 
 class AppContainer(containers.DeclarativeContainer):
@@ -27,4 +28,5 @@ class AppContainer(containers.DeclarativeContainer):
                                              api=api_access,
                                              utils=utils,
                                              settings=app_settings)
+    yolo_v12_service = providers.Singleton(YoloV12DetectionService)
 

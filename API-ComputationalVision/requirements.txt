@@ -10,3 +10,8 @@ pymysql
 oracledb
 pyodbc
 python-tds
+python-multipart
+numpy
+opencv-python-headless
+ultralytics
+torch
