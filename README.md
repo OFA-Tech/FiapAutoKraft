@@ -28,3 +28,10 @@ Controle e navegação: ROS (Robot Operating System), SLAM
 Hardware (simulado): MiR 100, UR3e, NVIDIA Jetson, câmeras ZED
 
 Integração de sistemas: Python, C++, Docker, MQTT, REST APIs
+
+## 🖥️ Ferramentas adicionais
+
+- **Console-ComputationalVision** – Aplicativo em Python para executar as mesmas
+  detecções YOLO do serviço de API diretamente no console. Permite testar
+  imagens, vídeos ou câmeras ao vivo desenhando as bounding boxes e exibindo a
+  posição `(x, y)` dos objetos detectados.
