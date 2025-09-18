@@ -6,6 +6,8 @@ from Domain.Models.Vision.ImageDetectionRequestModel import ImageDetectionReques
 from Domain.Models.Vision.ImageDetectionResponseModel import ImageDetectionResponseModel
 from Domain.Models.Vision.VideoDetectionRequestModel import VideoDetectionRequestModel
 from Domain.Models.Vision.VideoDetectionResponseModel import VideoDetectionResponseModel
+from Domain.Models.Vision.RealTimeDetectionRequestModel import RealTimeDetectionRequestModel
+from Domain.Models.Vision.RealTimeDetectionResponseModel import RealTimeDetectionResponseModel
 from Infrastructure.CrossCutting.InjectionConfiguration import AppContainer
 from Services.ApplicationServices.YoloV12DetectionService import YoloV12DetectionService
 
@@ -66,6 +68,37 @@ class VisionController(ControllerBase):
                     video_data=request.video_base64,
                     frame_interval=request.frame_interval,
                     max_frames=request.max_frames,
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(exc),
+                ) from exc
+
+        @self.router.post(
+            "/detect-realtime",
+            response_model=RealTimeDetectionResponseModel,
+            summary="Detect objects from a live camera feed using YOLOv12",
+        )
+        @inject
+        async def detect_realtime(
+            request: RealTimeDetectionRequestModel,
+            service: YoloV12DetectionService = Depends(Provide[AppContainer.yolo_v12_service]),
+        ) -> RealTimeDetectionResponseModel:
+            if service is None:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Object detection service is not available.",
+                )
+
+            try:
+                return await service.detect_realtime(
+                    camera_index=request.camera_index,
+                    frame_interval=request.frame_interval,
+                    max_frames=request.max_frames,
+                    min_confidence=request.min_confidence,
+                    target_classes=request.target_classes,
+                    timeout_seconds=request.timeout_seconds,
                 )
             except ValueError as exc:
                 raise HTTPException(

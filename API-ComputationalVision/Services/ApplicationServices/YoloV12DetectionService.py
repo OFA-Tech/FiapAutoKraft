@@ -3,9 +3,10 @@ import base64
 import os
 import tempfile
 import threading
+import time
 from pathlib import Path
 from binascii import Error as BinasciiError
-from typing import Optional, Union
+from typing import Optional, Sequence, Union
 
 import cv2
 import numpy as np
@@ -16,6 +17,7 @@ from Domain.Models.Vision.BoundingBoxModel import BoundingBoxModel
 from Domain.Models.Vision.FrameDetectionsModel import FrameDetectionsModel
 from Domain.Models.Vision.ImageDetectionResponseModel import ImageDetectionResponseModel
 from Domain.Models.Vision.VideoDetectionResponseModel import VideoDetectionResponseModel
+from Domain.Models.Vision.RealTimeDetectionResponseModel import RealTimeDetectionResponseModel
 
 
 class YoloV12DetectionService:
@@ -29,6 +31,7 @@ class YoloV12DetectionService:
         max_detections: int = 100,
         video_max_frames: int = 60,
         frame_interval: int = 5,
+        labels_path: Optional[str] = None,
     ) -> None:
         self._model_path = model_path or os.getenv("YOLOV12_MODEL_PATH", "yolov8n.pt")
         self._confidence_threshold = confidence_threshold
@@ -39,6 +42,8 @@ class YoloV12DetectionService:
         self._model: Optional[YOLO] = None
         self._model_lock = threading.Lock()
         self._model_version = Path(self._model_path).stem or "yolov12"
+        self._labels_path = labels_path
+        self._custom_labels = self._load_labels(labels_path)
 
     async def detect_image(self, image_data: Union[bytes, str]) -> ImageDetectionResponseModel:
         """Execute object detection on image payloads provided as bytes or base64 strings."""
@@ -61,6 +66,35 @@ class YoloV12DetectionService:
 
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._detect_video_sync, video_bytes, interval, frame_limit)
+
+    async def detect_realtime(
+        self,
+        camera_index: int,
+        frame_interval: Optional[int] = None,
+        max_frames: Optional[int] = None,
+        min_confidence: Optional[float] = None,
+        target_classes: Optional[Sequence[str]] = None,
+        timeout_seconds: Optional[float] = None,
+    ) -> RealTimeDetectionResponseModel:
+        """Execute object detection using a camera connected to the API host."""
+
+        interval = max(1, frame_interval or self._frame_interval)
+        frame_limit = max(1, max_frames or self._video_max_frames)
+        confidence_threshold = (
+            self._confidence_threshold if min_confidence is None else max(0.0, min(min_confidence, 1.0))
+        )
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            self._detect_realtime_sync,
+            camera_index,
+            interval,
+            frame_limit,
+            confidence_threshold,
+            target_classes,
+            timeout_seconds,
+        )
 
     #region Private helpers
     def _detect_image_sync(self, image_bytes: bytes) -> ImageDetectionResponseModel:
@@ -130,6 +164,71 @@ class YoloV12DetectionService:
             except OSError:
                 pass
 
+    def _detect_realtime_sync(
+        self,
+        camera_index: int,
+        frame_interval: int,
+        frame_limit: int,
+        min_confidence: float,
+        target_classes: Optional[Sequence[str]],
+        timeout_seconds: Optional[float],
+    ) -> RealTimeDetectionResponseModel:
+        capture = cv2.VideoCapture(camera_index)
+        if not capture.isOpened():
+            raise ValueError(
+                f"Unable to access camera index {camera_index}. Ensure a camera is connected and accessible."
+            )
+
+        processed_frames = 0
+        frame_index = 0
+        total_inference_time = 0.0
+        matched_detections: list[DetectionModel] = []
+        matched_frame_index: Optional[int] = None
+        normalized_targets = self._normalize_target_classes(target_classes)
+        start_time = time.monotonic()
+
+        try:
+            while processed_frames < frame_limit:
+                if timeout_seconds is not None and timeout_seconds > 0:
+                    if time.monotonic() - start_time > timeout_seconds:
+                        break
+
+                success, frame = capture.read()
+                if not success:
+                    break
+
+                if frame_index % frame_interval == 0:
+                    result = self._predict_frame(frame)
+                    detections = self._map_detections(result)
+                    total_inference_time += self._compute_inference_time(result)
+                    processed_frames += 1
+
+                    filtered_detections = [
+                        detection
+                        for detection in detections
+                        if detection.confidence >= min_confidence
+                        and self._matches_target_class(detection, normalized_targets)
+                    ]
+
+                    if filtered_detections:
+                        matched_detections = filtered_detections
+                        matched_frame_index = frame_index
+                        break
+
+                frame_index += 1
+        finally:
+            capture.release()
+
+        return RealTimeDetectionResponseModel(
+            model_version=self._model_version,
+            frame_interval=frame_interval,
+            frames_processed=processed_frames,
+            inference_time_ms=total_inference_time,
+            found=bool(matched_detections),
+            matched_frame_index=matched_frame_index,
+            detections=matched_detections,
+        )
+
     def _decode_image(self, image_bytes: bytes) -> np.ndarray:
         np_array = np.frombuffer(image_bytes, dtype=np.uint8)
         if np_array.size == 0:
@@ -190,7 +289,9 @@ class YoloV12DetectionService:
                 continue
 
             class_id = int(box.cls[0])
-            if isinstance(names, dict):
+            if self._custom_labels and class_id in self._custom_labels:
+                label = self._custom_labels[class_id]
+            elif isinstance(names, dict):
                 label = names.get(class_id, str(class_id))
             elif isinstance(names, (list, tuple)) and 0 <= class_id < len(names):
                 label = names[class_id]
@@ -264,5 +365,61 @@ class YoloV12DetectionService:
             raise ValueError(f"No {payload_type} content received for detection.")
 
         return payload
+
+    def _load_labels(self, labels_path: Optional[str]) -> dict[int, str]:
+        """Load custom class labels defined in the assets directory, if present."""
+
+        candidates: list[Path] = []
+        if labels_path:
+            candidates.append(Path(labels_path))
+
+        base_assets = Path(__file__).resolve().parents[2] / "App" / "Assets"
+        candidates.extend(
+            [
+                base_assets / "labels.txt",
+                base_assets / "converted_savedmodel" / "labels.txt",
+            ]
+        )
+
+        selected_path: Optional[Path] = None
+        for candidate in candidates:
+            if candidate and candidate.exists():
+                selected_path = candidate
+                break
+
+        if selected_path is None:
+            return {}
+
+        self._labels_path = str(selected_path)
+        labels: dict[int, str] = {}
+        try:
+            with selected_path.open("r", encoding="utf-8") as file:
+                for raw_line in file:
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+
+                    parts = line.split(maxsplit=1)
+                    if len(parts) == 2 and parts[0].isdigit():
+                        labels[int(parts[0])] = parts[1].strip()
+                    else:
+                        index = len(labels)
+                        labels[index] = line
+        except OSError:
+            return {}
+
+        return labels
+
+    @staticmethod
+    def _normalize_target_classes(target_classes: Optional[Sequence[str]]) -> set[str]:
+        if not target_classes:
+            return set()
+        return {target.strip().lower() for target in target_classes if target and target.strip()}
+
+    @staticmethod
+    def _matches_target_class(detection: DetectionModel, target_classes: set[str]) -> bool:
+        if not target_classes:
+            return True
+        return detection.class_name.strip().lower() in target_classes
 
     #endregion
