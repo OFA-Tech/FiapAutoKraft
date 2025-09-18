@@ -12,6 +12,6 @@ pyodbc
 python-tds
 python-multipart
 numpy
-opencv-python-headless
+opencv-python
 ultralytics
 torch
