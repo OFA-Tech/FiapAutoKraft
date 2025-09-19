@@ -490,10 +490,11 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--model",
-        default=os.getenv("YOLOV12_MODEL_PATH", "yolov8n.pt"),
+        default=None,
         help=(
             "Path to the model weights. Supports YOLO files (e.g. '.pt') and Keras models "
-            "('.h5', SavedModel directories). Defaults to YOLOV12_MODEL_PATH or 'yolov8n.pt'."
+            "('.h5', SavedModel directories). When omitted the application attempts to load the "
+            "bundled Keras image classifier (or the path defined by KERAS_MODEL_PATH)."
         ),
     )
     parser.add_argument(
@@ -539,6 +540,58 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
+def _find_packaged_keras_model() -> Optional[Path]:
+    """Return the first available bundled Keras model shipped with the project."""
+
+    base_dir = Path(__file__).resolve().parent
+    candidates = [
+        base_dir / "keras_models" / "keras_model.h5",
+        base_dir / "keras_models" / "converted_savedmodel" / "model.savedmodel",
+    ]
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _default_yolo_model_path() -> Path:
+    env_path = os.getenv("YOLOV12_MODEL_PATH")
+    if env_path:
+        return Path(env_path).expanduser()
+
+    return Path(__file__).resolve().parent / "yolov8n.pt"
+
+
+def resolve_model_path(args: argparse.Namespace) -> Path:
+    """Resolve the model path taking into account backend and bundled assets."""
+
+    if args.model:
+        return Path(str(args.model)).expanduser()
+
+    backend_preference = args.backend if args.backend != "auto" else "keras"
+
+    if backend_preference == "keras":
+        env_path = os.getenv("KERAS_MODEL_PATH")
+        if env_path:
+            return Path(env_path).expanduser()
+
+        packaged = _find_packaged_keras_model()
+        if packaged is not None:
+            return packaged
+
+        if args.backend == "auto":
+            # Fall back to YOLO weights if the bundled Keras assets are missing.
+            return _default_yolo_model_path()
+
+        raise FileNotFoundError(
+            "No Keras model found. Provide --model, set KERAS_MODEL_PATH or place the "
+            "bundled files under 'keras_models/'."
+        )
+
+    return _default_yolo_model_path()
+
+
 def interpret_source(raw_source: str) -> Union[int, str]:
     try:
         return int(raw_source)
@@ -563,17 +616,17 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     args = parse_args(argv)
     source = interpret_source(args.source)
 
-    app = ConsoleDetectionApp(
-        model_path=args.model,
-        confidence=args.confidence,
-        iou=args.iou,
-        max_detections=args.max_detections,
-        device=args.device,
-        labels_path=args.labels,
-        backend=args.backend,
-    )
-
     try:
+        model_path = resolve_model_path(args)
+        app = ConsoleDetectionApp(
+            model_path=model_path,
+            confidence=args.confidence,
+            iou=args.iou,
+            max_detections=args.max_detections,
+            device=args.device,
+            labels_path=args.labels,
+            backend=args.backend,
+        )
         source_type = determine_source_type(source)
         if source_type == "image":
             image_path = Path(str(source)).expanduser().resolve()
