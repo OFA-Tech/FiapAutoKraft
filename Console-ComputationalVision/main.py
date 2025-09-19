@@ -36,7 +36,7 @@ def main():
         if frame_count % 3 == 0:
             frame = process_frame(frame, model, names)
 
-        cv2.imshow('YOLOv8 Detection', frame)
+        cv2.imshow('YOLOv12 Detection', frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
