@@ -17,12 +17,13 @@ pip install -r requirements.txt
 
 2. The console defaults to the bundled TensorFlow/Keras classifier (preferring
    the `keras_models/keras_model.keras` or `keras_models/keras_model.h5`
-   checkpoints and only falling back to the legacy
-   `keras_models/converted_savedmodel/model.savedmodel` directory when those
-   files are missing). If you want to run the YOLO detector instead, download or
-   reuse the weights referenced by the API (e.g. `yolov8n.pt`) and place them in
-   the repository root or set the `YOLOV12_MODEL_PATH` environment variable to
-   point to your weights file.
+   checkpoints and automatically falling back to the
+   `keras_models/converted_savedmodel/model.savedmodel` directory when the
+   packaged weights are missing or incompatible with your local TensorFlow
+   build). If you want to run the YOLO detector instead, download or reuse the
+   weights referenced by the API (e.g. `yolov8n.pt`) and place them in the
+   repository root or set the `YOLOV12_MODEL_PATH` environment variable to point
+   to your weights file.
 
 3. Run the console application:
 
@@ -62,7 +63,10 @@ window has focus.
   focused on the trained products.
 - In Keras mode the application shows the top-3 predictions for each frame and logs
   the class confidence to the terminal. Ensure TensorFlow is installed (included via
-  `requirements.txt`) before enabling this workflow.
+  `requirements.txt`) before enabling this workflow. When the `.h5` checkpoint
+  cannot be deserialised because of Keras/TensorFlow version differences the app
+  seamlessly loads the bundled SavedModel via `tf.saved_model` instead, so no
+  manual conversion is required.
 - A compatibility shim automatically handles older TensorFlow builds that do not yet
   support the `groups` argument for `DepthwiseConv2D` when loading the bundled
   classifier weights.

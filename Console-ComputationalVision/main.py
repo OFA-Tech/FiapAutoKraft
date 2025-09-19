@@ -136,6 +136,10 @@ class ConsoleDetectionApp:
                 "Provide a valid path using --model."
             )
 
+        suffix = self._model_path.suffix.lower()
+        if self._model_path.is_dir() or suffix in {".savedmodel", ".pb"}:
+            return self._load_saved_model_classifier(self._model_path)
+
         try:
             from tensorflow.keras.models import load_model
         except ImportError as exc:  # pragma: no cover - import depends on optional dependency
@@ -145,47 +149,56 @@ class ConsoleDetectionApp:
             ) from exc
 
         load_kwargs = {"compile": False}
+        load_exception: Optional[Exception] = None
+
         try:
             model = load_model(str(self._model_path), **load_kwargs)
         except (TypeError, ValueError) as exc:
             message = str(exc).lower()
             if "file format not supported" in message and (
                 self._model_path.is_dir()
-                or self._model_path.suffix.lower() in {".pb", ".savedmodel"}
+                or suffix in {".pb", ".savedmodel"}
             ):
-                raise RuntimeError(
-                    "The selected Keras model uses the legacy TensorFlow SavedModel format, "
-                    "which `load_model()` in Keras 3 can no longer import. "
-                    "Select the packaged 'keras_models/keras_model.h5' weights, provide a .keras/.h5 "
-                    "file via --model or load the SavedModel with keras.layers.TFSMLayer instead."
-                ) from exc
+                return self._load_saved_model_with_fallback()
 
             if "groups" not in message or "depthwiseconv2d" not in message:
-                raise
+                load_exception = exc
+            else:
+                try:
+                    from tensorflow.keras.layers import DepthwiseConv2D
+                except ImportError as layer_exc:  # pragma: no cover - optional dependency
+                    raise layer_exc from exc
 
-            try:
-                from tensorflow.keras.layers import DepthwiseConv2D
-            except ImportError as layer_exc:  # pragma: no cover - optional dependency
-                raise layer_exc from exc
+                class DepthwiseConv2DCompat(DepthwiseConv2D):
+                    """Backward compatible layer that ignores unsupported 'groups' kwarg."""
 
-            class DepthwiseConv2DCompat(DepthwiseConv2D):
-                """Backward compatible layer that ignores unsupported 'groups' kwarg."""
+                    @classmethod
+                    def from_config(cls, config):
+                        normalized = dict(config)
+                        normalized.pop("groups", None)
+                        return super().from_config(normalized)
 
-                @classmethod
-                def from_config(cls, config):
-                    normalized = dict(config)
-                    normalized.pop("groups", None)
-                    return super().from_config(normalized)
+                load_kwargs["custom_objects"] = {"DepthwiseConv2D": DepthwiseConv2DCompat}
+                try:
+                    model = load_model(str(self._model_path), **load_kwargs)
+                except Exception as compat_exc:  # pragma: no cover - depends on runtime assets
+                    load_exception = compat_exc
+        except Exception as exc:  # pragma: no cover - depends on runtime assets
+            load_exception = exc
+        else:
+            load_exception = None
 
-            load_kwargs["custom_objects"] = {"DepthwiseConv2D": DepthwiseConv2DCompat}
-            try:
-                model = load_model(str(self._model_path), **load_kwargs)
-            except Exception as compat_exc:  # pragma: no cover - depends on runtime assets
-                raise RuntimeError(
-                    "Unable to load the packaged Keras model due to incompatible "
-                    "TensorFlow dependencies. Provide a compatible model via --model "
-                    "or update your TensorFlow installation."
-                ) from compat_exc
+        if load_exception is not None:
+            fallback = self._locate_saved_model_directory()
+            if fallback is not None:
+                return self._load_saved_model_classifier(fallback)
+
+            message = (
+                "Unable to load the selected Keras model. Provide a compatible ``.keras``/``.h5`` "
+                "checkpoint via --model or install TensorFlow with the required ops."
+            )
+            raise RuntimeError(message) from load_exception
+
         input_shape = getattr(model, "input_shape", None)
         if isinstance(input_shape, list):
             input_shape = input_shape[0] if input_shape else None
@@ -197,6 +210,155 @@ class ConsoleDetectionApp:
                 self._keras_input_size = (height, width)
 
         return model
+
+    def _load_saved_model_with_fallback(self):
+        fallback = self._locate_saved_model_directory()
+        if fallback is None:
+            raise RuntimeError(
+                "The selected Keras model uses the legacy TensorFlow SavedModel format, which "
+                "`load_model()` in Keras 3 can no longer import. Provide a `.keras`/`.h5` file "
+                "via --model or install the bundled weights under 'keras_models/'."
+            )
+        return self._load_saved_model_classifier(fallback)
+
+    def _locate_saved_model_directory(self) -> Optional[Path]:
+        """Return a SavedModel directory related to the configured model path."""
+
+        candidates: list[Path] = []
+        if self._model_path.is_dir():
+            candidates.append(self._model_path)
+        else:
+            parent = self._model_path.parent
+            candidates.extend(
+                [
+                    parent / "model.savedmodel",
+                    parent / "saved_model",
+                    parent / "converted_savedmodel" / "model.savedmodel",
+                ]
+            )
+
+        packaged = Path(__file__).resolve().parent / "keras_models" / "converted_savedmodel" / "model.savedmodel"
+        candidates.append(packaged)
+
+        for candidate in candidates:
+            if candidate.exists() and (candidate / "saved_model.pb").exists():
+                return candidate
+        return None
+
+    def _load_saved_model_classifier(self, model_dir: Path):  # pragma: no cover - requires tensorflow dependency
+        try:
+            import tensorflow as tf
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise ImportError(
+                "TensorFlow is required to run the Keras SavedModel backend. Install it via "
+                "'pip install tensorflow'."
+            ) from exc
+
+        model_dir = model_dir.resolve()
+        if not (model_dir / "saved_model.pb").exists():
+            raise FileNotFoundError(
+                f"SavedModel directory '{model_dir}' is missing the 'saved_model.pb' file."
+            )
+
+        loaded = tf.saved_model.load(str(model_dir))
+        signature = loaded.signatures.get("serving_default")
+        if signature is None and loaded.signatures:
+            signature = next(iter(loaded.signatures.values()))
+
+        if signature is None:
+            raise RuntimeError(
+                "The SavedModel does not expose a callable signature. Provide a `.keras`/`.h5` "
+                "checkpoint via --model instead."
+            )
+
+        args, kwargs = signature.structured_input_signature
+        use_kwargs = bool(kwargs)
+        input_key: Optional[str] = None
+        input_spec = None
+
+        if use_kwargs:
+            input_key, input_spec = next(iter(kwargs.items()))
+        elif args:
+            input_spec = args[0]
+        else:
+            raise RuntimeError("Unable to determine the SavedModel input signature.")
+
+        output_keys: list[str] = []
+        structured_outputs = signature.structured_outputs
+        if isinstance(structured_outputs, dict):
+            output_keys = list(structured_outputs.keys())
+        elif isinstance(structured_outputs, (list, tuple)):
+            output_keys = [str(index) for index in range(len(structured_outputs))]
+
+        def _shape_from_spec(spec) -> Optional[tuple[int, ...]]:
+            if spec is None:
+                return None
+            shape = getattr(spec, "shape", None)
+            if shape is None:
+                return None
+            dims = list(shape)
+            result: list[int] = []
+            for dim in dims:
+                if dim is None:
+                    result.append(-1)
+                else:
+                    try:
+                        result.append(int(dim))
+                    except (TypeError, ValueError):
+                        return None
+            return tuple(result)
+
+        input_shape = _shape_from_spec(input_spec)
+        if input_shape and len(input_shape) >= 3:
+            height = input_shape[-3]
+            width = input_shape[-2]
+            if height > 0 and width > 0:
+                self._keras_input_size = (height, width)
+
+        class SavedModelWrapper:
+            """Thin wrapper exposing the SavedModel as a Keras-like predictor."""
+
+            def __init__(
+                self,
+                fn,
+                *,
+                use_kwargs: bool,
+                input_key: Optional[str],
+                output_keys: list[str],
+            ) -> None:
+                self._fn = fn
+                self._use_kwargs = use_kwargs
+                self._input_key = input_key
+                self._output_keys = output_keys
+                self.input_shape = input_shape
+
+            def predict(self, data, verbose: int = 0):  # pragma: no cover - requires tensorflow dependency
+                tensor = tf.convert_to_tensor(data)
+                if self._use_kwargs and self._input_key:
+                    outputs = self._fn(**{self._input_key: tensor})
+                else:
+                    outputs = self._fn(tensor)
+
+                if isinstance(outputs, dict):
+                    for key in self._output_keys:
+                        if key in outputs:
+                            result = outputs[key]
+                            break
+                    else:
+                        result = next(iter(outputs.values()))
+                elif isinstance(outputs, (list, tuple)):
+                    result = outputs[0]
+                else:
+                    result = outputs
+
+                return result.numpy()
+
+        return SavedModelWrapper(
+            signature,
+            use_kwargs=use_kwargs,
+            input_key=input_key,
+            output_keys=output_keys,
+        )
 
     def _resolve_class_names(self) -> dict[int, str]:
         if self._custom_labels:
