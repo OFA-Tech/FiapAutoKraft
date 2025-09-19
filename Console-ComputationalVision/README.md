@@ -15,11 +15,12 @@ source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-2. The console defaults to the bundled TensorFlow/Keras classifier stored under
-   `keras_models/keras_model.h5`. If you want to run the YOLO detector instead,
-   download or reuse the weights referenced by the API (e.g. `yolov8n.pt`) and
-   place them in the repository root or set the `YOLOV12_MODEL_PATH`
-   environment variable to point to your weights file.
+2. The console defaults to the bundled TensorFlow/Keras classifier (preferring
+   the SavedModel under `keras_models/converted_savedmodel/model.savedmodel`
+   and falling back to `keras_models/keras_model.h5`). If you want to run the
+   YOLO detector instead, download or reuse the weights referenced by the API
+   (e.g. `yolov8n.pt`) and place them in the repository root or set the
+   `YOLOV12_MODEL_PATH` environment variable to point to your weights file.
 
 3. Run the console application:
 
@@ -60,3 +61,6 @@ window has focus.
 - In Keras mode the application shows the top-3 predictions for each frame and logs
   the class confidence to the terminal. Ensure TensorFlow is installed (included via
   `requirements.txt`) before enabling this workflow.
+- A compatibility shim automatically handles older TensorFlow builds that do not yet
+  support the `groups` argument for `DepthwiseConv2D` when loading the bundled
+  classifier weights.

@@ -144,7 +144,37 @@ class ConsoleDetectionApp:
                 "'pip install tensorflow'."
             ) from exc
 
-        model = load_model(str(self._model_path), compile=False)
+        load_kwargs = {"compile": False}
+        try:
+            model = load_model(str(self._model_path), **load_kwargs)
+        except (TypeError, ValueError) as exc:
+            message = str(exc).lower()
+            if "groups" not in message or "depthwiseconv2d" not in message:
+                raise
+
+            try:
+                from tensorflow.keras.layers import DepthwiseConv2D
+            except ImportError as layer_exc:  # pragma: no cover - optional dependency
+                raise layer_exc from exc
+
+            class DepthwiseConv2DCompat(DepthwiseConv2D):
+                """Backward compatible layer that ignores unsupported 'groups' kwarg."""
+
+                @classmethod
+                def from_config(cls, config):
+                    normalized = dict(config)
+                    normalized.pop("groups", None)
+                    return super().from_config(normalized)
+
+            load_kwargs["custom_objects"] = {"DepthwiseConv2D": DepthwiseConv2DCompat}
+            try:
+                model = load_model(str(self._model_path), **load_kwargs)
+            except Exception as compat_exc:  # pragma: no cover - depends on runtime assets
+                raise RuntimeError(
+                    "Unable to load the packaged Keras model due to incompatible "
+                    "TensorFlow dependencies. Provide a compatible model via --model "
+                    "or update your TensorFlow installation."
+                ) from compat_exc
         input_shape = getattr(model, "input_shape", None)
         if isinstance(input_shape, list):
             input_shape = input_shape[0] if input_shape else None
@@ -545,8 +575,8 @@ def _find_packaged_keras_model() -> Optional[Path]:
 
     base_dir = Path(__file__).resolve().parent
     candidates = [
-        base_dir / "keras_models" / "keras_model.h5",
         base_dir / "keras_models" / "converted_savedmodel" / "model.savedmodel",
+        base_dir / "keras_models" / "keras_model.h5",
     ]
 
     for candidate in candidates:
