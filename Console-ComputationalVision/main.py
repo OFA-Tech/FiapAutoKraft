@@ -56,6 +56,7 @@ class ConsoleDetectionApp:
         iou: float = 0.45,
         max_detections: int = 100,
         device: Optional[str] = None,
+        labels_path: Optional[Union[str, os.PathLike[str]]] = None,
     ) -> None:
         self._model_path = Path(model_path)
         self._confidence = max(0.0, min(confidence, 1.0))
@@ -63,6 +64,7 @@ class ConsoleDetectionApp:
         self._max_detections = max(1, int(max_detections))
         self._device = device
         self._model = self._load_model()
+        self._custom_labels = self._load_custom_labels(labels_path)
         self._class_names = self._resolve_class_names()
 
     def _load_model(self) -> YOLO:
@@ -82,12 +84,60 @@ class ConsoleDetectionApp:
         return model
 
     def _resolve_class_names(self) -> dict[int, str]:
+        if self._custom_labels:
+            return self._custom_labels
         names = getattr(self._model, "names", {})
         if isinstance(names, dict):
             return {int(key): str(value) for key, value in names.items()}
         if isinstance(names, (list, tuple)):
             return {index: str(value) for index, value in enumerate(names)}
         return {}
+
+    def _load_custom_labels(
+        self, labels_path: Optional[Union[str, os.PathLike[str]]]
+    ) -> dict[int, str]:
+        """Load custom class labels defined for the keras models."""
+
+        candidates: list[Path] = []
+        if labels_path:
+            candidates.append(Path(labels_path))
+
+        base_dir = Path(__file__).resolve().parent
+        candidates.extend(
+            [
+                base_dir / "labels.txt",
+                base_dir / "keras_models" / "labels.txt",
+                base_dir / "keras_models" / "converted_savedmodel" / "labels.txt",
+            ]
+        )
+
+        selected_path: Optional[Path] = None
+        for candidate in candidates:
+            if candidate.exists():
+                selected_path = candidate
+                break
+
+        if selected_path is None:
+            return {}
+
+        labels: dict[int, str] = {}
+        try:
+            with selected_path.open("r", encoding="utf-8") as file:
+                for raw_line in file:
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+
+                    parts = line.split(maxsplit=1)
+                    if len(parts) == 2 and parts[0].isdigit():
+                        labels[int(parts[0])] = parts[1].strip()
+                    else:
+                        index = len(labels)
+                        labels[index] = line
+        except OSError:
+            return {}
+
+        return labels
 
     # ------------------------------------------------------------------
     # Public execution helpers
@@ -190,7 +240,11 @@ class ConsoleDetectionApp:
             x_min, y_min, x_max, y_max = (int(float(value)) for value in coords)
             confidence = float(confidences[idx]) if idx < len(confidences) else 0.0
             class_id = int(class_ids[idx]) if idx < len(class_ids) else -1
-            label = self._class_names.get(class_id, str(class_id))
+            label = self._class_names.get(class_id)
+            if self._custom_labels and label is None:
+                continue
+            if label is None:
+                label = str(class_id)
 
             center_x = int((x_min + x_max) / 2)
             center_y = int((y_min + y_max) / 2)
@@ -274,6 +328,14 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
         default=None,
         help="Optional Torch device where the model should run (e.g. 'cuda:0' or 'cpu').",
     )
+    parser.add_argument(
+        "--labels",
+        default=None,
+        help=(
+            "Optional path to a custom labels.txt file. If not provided, the application "
+            "searches the keras_models directory for labels."
+        ),
+    )
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
@@ -307,6 +369,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         iou=args.iou,
         max_detections=args.max_detections,
         device=args.device,
+        labels_path=args.labels,
     )
 
     try:

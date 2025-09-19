@@ -38,6 +38,8 @@ window has focus.
 - `--iou`: Intersection-over-Union threshold used by non-max suppression.
 - `--max-detections`: maximum number of detections drawn per frame.
 - `--device`: optional torch device (e.g. `cuda:0` or `cpu`).
+- `--labels`: path to a custom `labels.txt` file. When omitted the app searches the
+  `keras_models` directory and will only display detections for the labels found there.
 
 ## 📝 Notes
 
@@ -45,3 +47,6 @@ window has focus.
   and the `(x, y)` coordinates of each detection's center.
 - The frame rate indicator at the top-left corner helps you monitor the
   inference speed of your hardware.
+- When a custom labels file is present under `keras_models/converted_savedmodel/labels.txt`
+  only those classes will be displayed in the output, ensuring the detections stay
+  focused on the trained products.
