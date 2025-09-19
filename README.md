@@ -34,4 +34,7 @@ Integração de sistemas: Python, C++, Docker, MQTT, REST APIs
 - **Console-ComputationalVision** – Aplicativo em Python para executar as mesmas
   detecções YOLO do serviço de API diretamente no console. Permite testar
   imagens, vídeos ou câmeras ao vivo desenhando as bounding boxes e exibindo a
-  posição `(x, y)` dos objetos detectados.
+  posição `(x, y)` dos objetos detectados. O script agora aceita parâmetros de
+  linha de comando para configurar o modelo YOLOv12, escolher a câmera, ajustar
+  resolução e aplicar *digital zoom* (por exemplo `--digital-zoom 0.7` para
+  "afastar" a visualização mantendo a inferência na imagem original).
