@@ -16,11 +16,13 @@ pip install -r requirements.txt
 ```
 
 2. The console defaults to the bundled TensorFlow/Keras classifier (preferring
-   the SavedModel under `keras_models/converted_savedmodel/model.savedmodel`
-   and falling back to `keras_models/keras_model.h5`). If you want to run the
-   YOLO detector instead, download or reuse the weights referenced by the API
-   (e.g. `yolov8n.pt`) and place them in the repository root or set the
-   `YOLOV12_MODEL_PATH` environment variable to point to your weights file.
+   the `keras_models/keras_model.keras` or `keras_models/keras_model.h5`
+   checkpoints and only falling back to the legacy
+   `keras_models/converted_savedmodel/model.savedmodel` directory when those
+   files are missing). If you want to run the YOLO detector instead, download or
+   reuse the weights referenced by the API (e.g. `yolov8n.pt`) and place them in
+   the repository root or set the `YOLOV12_MODEL_PATH` environment variable to
+   point to your weights file.
 
 3. Run the console application:
 

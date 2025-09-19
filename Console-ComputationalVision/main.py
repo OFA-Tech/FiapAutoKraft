@@ -149,6 +149,17 @@ class ConsoleDetectionApp:
             model = load_model(str(self._model_path), **load_kwargs)
         except (TypeError, ValueError) as exc:
             message = str(exc).lower()
+            if "file format not supported" in message and (
+                self._model_path.is_dir()
+                or self._model_path.suffix.lower() in {".pb", ".savedmodel"}
+            ):
+                raise RuntimeError(
+                    "The selected Keras model uses the legacy TensorFlow SavedModel format, "
+                    "which `load_model()` in Keras 3 can no longer import. "
+                    "Select the packaged 'keras_models/keras_model.h5' weights, provide a .keras/.h5 "
+                    "file via --model or load the SavedModel with keras.layers.TFSMLayer instead."
+                ) from exc
+
             if "groups" not in message or "depthwiseconv2d" not in message:
                 raise
 
@@ -575,8 +586,9 @@ def _find_packaged_keras_model() -> Optional[Path]:
 
     base_dir = Path(__file__).resolve().parent
     candidates = [
-        base_dir / "keras_models" / "converted_savedmodel" / "model.savedmodel",
+        base_dir / "keras_models" / "keras_model.keras",
         base_dir / "keras_models" / "keras_model.h5",
+        base_dir / "keras_models" / "converted_savedmodel" / "model.savedmodel",
     ]
 
     for candidate in candidates:
