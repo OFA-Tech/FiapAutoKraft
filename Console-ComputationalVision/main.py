@@ -31,7 +31,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--camera-index",
         type=int,
-        default=0,
+        default=1,
         help="Index of the video capture device (0 for the first camera).",
     )
     parser.add_argument(
@@ -61,7 +61,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--confidence-threshold",
         type=float,
-        default=0.25,
+        default=0.70,
         help="Minimum confidence value required to draw a bounding box.",
     )
     parser.add_argument(
@@ -156,7 +156,12 @@ def draw_bounding_boxes(
     detections: Iterable,
     names: dict[int, str],
     confidence_threshold: float,
-) -> np.ndarray:
+) -> tuple[np.ndarray, list[dict]]:
+    """Draw only boxes with conf >= max(confidence_threshold, 0.75)
+    and return their coordinates."""
+    drawn: list[dict] = []
+    min_conf = max(confidence_threshold, 0.75)
+
     for detection in detections:
         boxes = getattr(detection, "boxes", None)
         if boxes is None:
@@ -164,13 +169,16 @@ def draw_bounding_boxes(
 
         for box in boxes:
             conf = float(box.conf[0])
-            if conf < confidence_threshold:
+            if conf < min_conf:
                 continue
 
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            x1, y1, x2, y2 = map(int, box.xyxy[0])   # top-left & bottom-right
+            cx = (x1 + x2) // 2                      # center (x, y)
+            cy = (y1 + y2) // 2
             cls = int(box.cls[0])
             label = names.get(cls, str(cls))
 
+            # rectangle + label
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
             cvzone.putTextRect(
                 frame,
@@ -180,7 +188,24 @@ def draw_bounding_boxes(
                 thickness=1,
                 offset=5,
             )
-    return frame
+            # (optional) draw the center and show coordinates
+            cv2.circle(frame, (cx, cy), 4, (0, 0, 255), -1)
+            cvzone.putTextRect(
+                frame,
+                f"({cx}, {cy})",
+                (cx + 8, cy - 8),
+                scale=0.8,
+                thickness=1,
+                offset=4,
+            )
+
+            drawn.append({
+                "label": label,
+                "conf": conf,
+                "bbox_xyxy": (x1, y1, x2, y2),
+                "center_xy": (cx, cy),
+            })
+    return frame, drawn
 
 
 def annotate_metadata(frame: np.ndarray, metadata: InferenceMetadata) -> np.ndarray:
@@ -219,7 +244,11 @@ def main() -> int:
                 metadata.last_inference_ms = (time.perf_counter() - inference_start) * 1000
 
             if last_inference:
-                frame = draw_bounding_boxes(frame, last_inference, names, args.confidence_threshold)
+                frame, detections_info = draw_bounding_boxes(
+                    frame, last_inference, names, args.confidence_threshold
+                )
+                for d in detections_info:
+                    print(d["label"], d["conf"], d["bbox_xyxy"], d["center_xy"])
 
             loop_duration = time.perf_counter() - loop_start
             metadata.fps = 1.0 / max(loop_duration, 1e-6)
