@@ -9,6 +9,7 @@ bounding boxes and reporting the (x, y) position of each detected object.
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 import time
@@ -44,6 +45,8 @@ class DetectionBox:
     top_left: tuple[int, int]
     bottom_right: tuple[int, int]
     center: tuple[int, int]
+    class_id: Optional[int] = None
+    detection_confidence: Optional[float] = None
 
 
 @dataclass
@@ -54,6 +57,22 @@ class ClassificationPrediction:
     confidence: float
     label: str
     probabilities: np.ndarray
+
+
+@dataclass
+class FrameOutput:
+    """Represents the inference output for a single frame."""
+
+    detections: list[DetectionBox]
+    classification: Optional[ClassificationPrediction] = None
+
+
+@dataclass
+class ResolvedModelPaths:
+    """Primary/secondary model selection derived from CLI arguments."""
+
+    primary: Path
+    detector: Optional[Path] = None
 
 
 class ConsoleDetectionApp:
@@ -68,6 +87,7 @@ class ConsoleDetectionApp:
         device: Optional[str] = None,
         labels_path: Optional[Union[str, os.PathLike[str]]] = None,
         backend: str = "auto",
+        detector_path: Optional[Union[str, os.PathLike[str]]] = None,
     ) -> None:
         self._model_path = Path(model_path)
         self._confidence = max(0.0, min(confidence, 1.0))
@@ -76,13 +96,18 @@ class ConsoleDetectionApp:
         self._device = device
         self._backend = self._resolve_backend(backend)
         self._keras_input_size: tuple[int, int] = (224, 224)
+        self._detector_path = Path(detector_path) if detector_path else None
+        self._detector_model: Optional[YOLO] = None
+        self._detector_class_names: dict[int, str] = {}
         self._last_classification_output: Optional[str] = None
+        self._last_detection_output: Optional[str] = None
         self._window_prefix = (
             "Keras Classification" if self._backend == "keras" else "YOLO Detection"
         )
 
         if self._backend == "keras":
             self._model = self._load_keras_model()
+            self._detector_model = self._load_detector_model()
         else:
             self._model = self._load_yolo_model()
 
@@ -113,13 +138,14 @@ class ConsoleDetectionApp:
 
         return "yolo"
 
-    def _load_yolo_model(self) -> YOLO:
-        if not self._model_path.exists():
+    def _load_yolo_model(self, model_path: Optional[Path] = None) -> YOLO:
+        path = Path(model_path) if model_path is not None else self._model_path
+        if not path.exists():
             raise FileNotFoundError(
-                f"YOLO model weights not found at '{self._model_path}'. "
+                f"YOLO model weights not found at '{path}'. "
                 "Provide a valid path using --model or YOLOV12_MODEL_PATH."
             )
-        model = YOLO(str(self._model_path))
+        model = YOLO(str(path))
         if self._device:
             try:
                 model.to(self._device)
@@ -128,6 +154,46 @@ class ConsoleDetectionApp:
                     f"Unable to move YOLO model to device '{self._device}'."
                 ) from exc
         return model
+
+    def _load_detector_model(self) -> Optional[YOLO]:
+        candidate_path: Optional[Path] = self._detector_path
+        if candidate_path is None:
+            fallback = _default_yolo_model_path()
+            if fallback.exists():
+                candidate_path = fallback
+
+        if candidate_path is None:
+            print(
+                "Warning: No YOLO weights available for detection proposals. "
+                "The Keras backend will run as a classifier without bounding boxes.",
+                file=sys.stderr,
+            )
+            return None
+
+        try:
+            model = self._load_yolo_model(candidate_path)
+        except FileNotFoundError as exc:
+            print(
+                f"Warning: {exc}. The Keras backend will run without bounding boxes.",
+                file=sys.stderr,
+            )
+        except Exception as exc:  # pragma: no cover - depends on runtime environment
+            print(
+                f"Warning: Unable to load YOLO detector from '{candidate_path}': {exc}",
+                file=sys.stderr,
+            )
+        else:
+            names = getattr(model, "names", {})
+            if isinstance(names, dict):
+                self._detector_class_names = {int(key): str(value) for key, value in names.items()}
+            elif isinstance(names, (list, tuple)):
+                self._detector_class_names = {
+                    index: str(value) for index, value in enumerate(names)
+                }
+            else:
+                self._detector_class_names = {}
+            return model
+        return None
 
     def _load_keras_model(self):  # pragma: no cover - requires tensorflow dependency
         if not self._model_path.exists():
@@ -424,12 +490,12 @@ class ConsoleDetectionApp:
         if frame is None:
             raise ValueError(f"Unable to read image from '{image_path}'.")
 
-        result = self._predict_frame(frame)
-        if self._backend == "keras":
-            annotated = self._draw_classification(frame, result)
-            self._maybe_report_classification(result, force=True)
+        output = self._predict_frame(frame)
+        if output.detections:
+            annotated = self._draw_detections(frame, output.detections)
         else:
-            annotated = self._draw_detections(frame, result)
+            annotated = self._draw_classification(frame, output.classification)
+        self._report_results(output, force=True)
 
         window_title = f"{self._window_prefix} - {image_path.name}"
         cv2.imshow(window_title, annotated)
@@ -464,12 +530,12 @@ class ConsoleDetectionApp:
                 break
 
             start_time = time.perf_counter()
-            result = self._predict_frame(frame)
-            if self._backend == "keras":
-                annotated = self._draw_classification(frame, result)
-                self._maybe_report_classification(result)
+            output = self._predict_frame(frame)
+            if output.detections:
+                annotated = self._draw_detections(frame, output.detections)
             else:
-                annotated = self._draw_detections(frame, result)
+                annotated = self._draw_classification(frame, output.classification)
+            self._report_results(output)
             elapsed = time.perf_counter() - start_time
             fps_instant = 1.0 / elapsed if elapsed > 0 else 0.0
             if fps_value is None:
@@ -494,12 +560,12 @@ class ConsoleDetectionApp:
             if key in {ord("q"), 27}:  # q or ESC
                 break
 
-    def _predict_frame(self, frame: np.ndarray):
+    def _predict_frame(self, frame: np.ndarray) -> FrameOutput:
         if self._backend == "keras":
             return self._predict_frame_keras(frame)
         return self._predict_frame_yolo(frame)
 
-    def _predict_frame_yolo(self, frame: np.ndarray):
+    def _predict_frame_yolo(self, frame: np.ndarray) -> FrameOutput:
         results = self._model.predict(
             source=frame,
             conf=self._confidence,
@@ -509,11 +575,81 @@ class ConsoleDetectionApp:
         )
         if not results:
             raise RuntimeError("YOLO did not return inference results for the provided frame.")
-        return results[0]
 
-    def _predict_frame_keras(self, frame: np.ndarray) -> ClassificationPrediction:
+        detections = self._build_detection_boxes(results[0])
+        return FrameOutput(detections=detections)
+
+    def _predict_frame_keras(self, frame: np.ndarray) -> FrameOutput:
+        if self._detector_model is None:
+            classification = self._classify_image(frame)
+            return FrameOutput(detections=[], classification=classification)
+
+        results = self._detector_model.predict(
+            source=frame,
+            conf=self._confidence,
+            iou=self._iou,
+            max_det=self._max_detections,
+            verbose=False,
+        )
+
+        detections: list[DetectionBox] = []
+        if results:
+            raw_boxes = self._iter_yolo_boxes(results[0])
+            height_frame, width_frame = frame.shape[:2]
+            for raw_box in raw_boxes:
+                x_min, y_min, x_max, y_max, detector_conf, class_id = raw_box
+                if detector_conf < self._confidence:
+                    continue
+
+                x_min_clamped = max(0, min(x_min, width_frame - 1))
+                y_min_clamped = max(0, min(y_min, height_frame - 1))
+                x_max_clamped = max(0, min(x_max, width_frame - 1))
+                y_max_clamped = max(0, min(y_max, height_frame - 1))
+
+                if x_max_clamped <= x_min_clamped or y_max_clamped <= y_min_clamped:
+                    continue
+
+                crop = frame[y_min_clamped:y_max_clamped, x_min_clamped:x_max_clamped]
+                if crop.size == 0:
+                    continue
+
+                classification = self._classify_image(crop)
+                label = classification.label if classification is not None else None
+                confidence = (
+                    classification.confidence if classification is not None else detector_conf
+                )
+                class_id_value = classification.index if classification is not None else class_id
+
+                if not label:
+                    label = self._detector_class_names.get(class_id, str(class_id))
+
+                center_x = int((x_min_clamped + x_max_clamped) / 2)
+                center_y = int((y_min_clamped + y_max_clamped) / 2)
+
+                detections.append(
+                    DetectionBox(
+                        label=label,
+                        confidence=confidence,
+                        top_left=(x_min_clamped, y_min_clamped),
+                        bottom_right=(x_max_clamped, y_max_clamped),
+                        center=(center_x, center_y),
+                        class_id=class_id_value,
+                        detection_confidence=detector_conf,
+                    )
+                )
+
+        if detections:
+            return FrameOutput(detections=detections)
+
+        classification = self._classify_image(frame)
+        return FrameOutput(detections=[], classification=classification)
+
+    def _classify_image(self, image: np.ndarray) -> Optional[ClassificationPrediction]:
+        if image.size == 0:
+            return None
+
         height, width = self._keras_input_size
-        resized = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+        resized = cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
         input_data = resized.astype(np.float32)
         input_data = (input_data / 127.5) - 1.0
         input_data = np.expand_dims(input_data, axis=0)
@@ -521,7 +657,7 @@ class ConsoleDetectionApp:
         predictions = self._model.predict(input_data, verbose=0)
         if isinstance(predictions, list):
             if not predictions:
-                raise RuntimeError("Keras model returned no predictions for the provided frame.")
+                return None
             probabilities = np.array(predictions[0])
         else:
             probabilities = np.array(predictions)
@@ -531,7 +667,7 @@ class ConsoleDetectionApp:
             probabilities = np.array([float(probabilities)])
 
         if probabilities.size == 0:
-            raise RuntimeError("Keras model returned an empty prediction vector.")
+            return None
 
         index = int(np.argmax(probabilities))
         confidence = float(probabilities[index])
@@ -544,11 +680,10 @@ class ConsoleDetectionApp:
             probabilities=probabilities,
         )
 
-    def _draw_detections(self, frame: np.ndarray, result) -> np.ndarray:
-        output = frame.copy()
+    def _iter_yolo_boxes(self, result) -> list[tuple[int, int, int, int, float, int]]:
         boxes = getattr(result, "boxes", None)
-        if boxes is None or boxes.xyxy is None:
-            return output
+        if boxes is None or getattr(boxes, "xyxy", None) is None:
+            return []
 
         try:
             xyxy = boxes.xyxy.cpu().numpy()
@@ -559,29 +694,51 @@ class ConsoleDetectionApp:
             confidences = boxes.conf if boxes.conf is not None else []
             class_ids = boxes.cls if boxes.cls is not None else []
 
+        parsed: list[tuple[int, int, int, int, float, int]] = []
         for idx, coords in enumerate(xyxy):
             x_min, y_min, x_max, y_max = (int(float(value)) for value in coords)
             confidence = float(confidences[idx]) if idx < len(confidences) else 0.0
             class_id = int(class_ids[idx]) if idx < len(class_ids) else -1
-            label = self._class_names.get(class_id)
-            if self._custom_labels and label is None:
+            parsed.append((x_min, y_min, x_max, y_max, confidence, class_id))
+        return parsed
+
+    def _build_detection_boxes(
+        self, result, label_override: Optional[dict[int, str]] = None
+    ) -> list[DetectionBox]:
+        detections: list[DetectionBox] = []
+        for x_min, y_min, x_max, y_max, confidence, class_id in self._iter_yolo_boxes(result):
+            if confidence < self._confidence:
                 continue
+
+            label: Optional[str]
+            if label_override and class_id in label_override:
+                label = label_override[class_id]
+            else:
+                label = self._class_names.get(class_id)
+                if self._custom_labels and label is None:
+                    continue
             if label is None:
                 label = str(class_id)
 
             center_x = int((x_min + x_max) / 2)
             center_y = int((y_min + y_max) / 2)
 
-            self._draw_box(
-                output,
+            detections.append(
                 DetectionBox(
                     label=label,
                     confidence=confidence,
                     top_left=(x_min, y_min),
                     bottom_right=(x_max, y_max),
                     center=(center_x, center_y),
-                ),
+                    class_id=class_id,
+                )
             )
+        return detections
+
+    def _draw_detections(self, frame: np.ndarray, detections: list[DetectionBox]) -> np.ndarray:
+        output = frame.copy()
+        for box in detections:
+            self._draw_box(output, box)
         return output
 
     @staticmethod
@@ -590,10 +747,20 @@ class ConsoleDetectionApp:
         cv2.rectangle(frame, box.top_left, box.bottom_right, color, 2)
         cv2.circle(frame, box.center, radius=4, color=(0, 0, 255), thickness=-1)
 
-        label = f"{box.label} {box.confidence:.2f}" if box.confidence > 0 else box.label
-        position_text = f"({box.center[0]}, {box.center[1]})"
+        confidence_text = f"{box.confidence:.2f}" if box.confidence > 0 else ""
+        label_text = box.label if box.label else str(box.class_id or "")
+        text = label_text
+        if confidence_text:
+            text = f"{text} {confidence_text}"
 
-        text = f"{label} {position_text}".strip()
+        if (
+            box.detection_confidence is not None
+            and (not confidence_text or not math.isclose(box.detection_confidence, box.confidence))
+        ):
+            text = f"{text} (det {box.detection_confidence:.2f})"
+
+        position_text = f"({box.center[0]}, {box.center[1]})"
+        text = f"{text} {position_text}".strip()
         text_origin = (box.top_left[0], max(box.top_left[1] - 10, 25))
         cv2.putText(
             frame,
@@ -607,7 +774,7 @@ class ConsoleDetectionApp:
         )
 
     def _draw_classification(
-        self, frame: np.ndarray, prediction: ClassificationPrediction
+        self, frame: np.ndarray, prediction: Optional[ClassificationPrediction]
     ) -> np.ndarray:
         output = frame.copy()
         if prediction is None:
@@ -652,24 +819,56 @@ class ConsoleDetectionApp:
 
         return output
 
-    def _maybe_report_classification(
+    def _report_results(self, output: FrameOutput, *, force: bool = False) -> None:
+        if output.detections:
+            self._report_detections(output.detections, force=force)
+        else:
+            self._report_classification(output.classification, force=force)
+
+    def _report_detections(
+        self, detections: list[DetectionBox], *, force: bool = False
+    ) -> None:
+        if not detections:
+            message = "No detections above threshold."
+        else:
+            parts: list[str] = []
+            for box in detections:
+                label = box.label or str(box.class_id)
+                part = (
+                    f"{label} @ {box.confidence:.2f} center=({box.center[0]}, {box.center[1]})"
+                )
+                if (
+                    box.detection_confidence is not None
+                    and not math.isclose(box.detection_confidence, box.confidence)
+                ):
+                    part = f"{part} det={box.detection_confidence:.2f}"
+                parts.append(part)
+            message = " | ".join(parts)
+
+        if force or message != self._last_detection_output:
+            print(message)
+            self._last_detection_output = message
+            self._last_classification_output = None
+
+    def _report_classification(
         self, prediction: Optional[ClassificationPrediction], *, force: bool = False
     ) -> None:
         if prediction is None:
-            return
-
-        confidence_pct = prediction.confidence * 100
-        label = prediction.label
-        if prediction.confidence < self._confidence:
-            message = (
-                f"Class: {label} | Confidence: {confidence_pct:.2f}% (below threshold {self._confidence:.0%})"
-            )
+            message = "Classification unavailable."
         else:
-            message = f"Class: {label} | Confidence: {confidence_pct:.2f}%"
+            confidence_pct = prediction.confidence * 100
+            label = prediction.label
+            if prediction.confidence < self._confidence:
+                message = (
+                    f"Class: {label} | Confidence: {confidence_pct:.2f}% (below threshold {self._confidence:.0%})"
+                )
+            else:
+                message = f"Class: {label} | Confidence: {confidence_pct:.2f}%"
 
         if force or message != self._last_classification_output:
             print(message)
             self._last_classification_output = message
+            self._last_detection_output = None
 
 
 # ----------------------------------------------------------------------
@@ -767,33 +966,60 @@ def _default_yolo_model_path() -> Path:
     return Path(__file__).resolve().parent / "yolov8n.pt"
 
 
-def resolve_model_path(args: argparse.Namespace) -> Path:
-    """Resolve the model path taking into account backend and bundled assets."""
+def _path_looks_like_keras(path: Path) -> bool:
+    suffix = path.suffix.lower()
+    if suffix in {".h5", ".keras", ".savedmodel", ".pb"}:
+        return True
+
+    if path.is_dir():
+        for candidate in ("saved_model.pb", "keras_metadata.pb"):
+            if (path / candidate).exists():
+                return True
+    return False
+
+
+def resolve_model_paths(args: argparse.Namespace) -> ResolvedModelPaths:
+    """Resolve the model selection taking into account backend and bundled assets."""
+
+    def _maybe_attach_detector(path: Path) -> Optional[Path]:
+        if args.backend == "keras" or (
+            args.backend == "auto" and _path_looks_like_keras(path)
+        ):
+            return _default_yolo_model_path()
+        return None
 
     if args.model:
-        return Path(str(args.model)).expanduser()
+        primary = Path(str(args.model)).expanduser()
+        detector = _maybe_attach_detector(primary)
+        return ResolvedModelPaths(primary=primary, detector=detector)
 
     backend_preference = args.backend if args.backend != "auto" else "keras"
 
     if backend_preference == "keras":
         env_path = os.getenv("KERAS_MODEL_PATH")
         if env_path:
-            return Path(env_path).expanduser()
+            primary = Path(env_path).expanduser()
+            return ResolvedModelPaths(primary=primary, detector=_default_yolo_model_path())
 
         packaged = _find_packaged_keras_model()
         if packaged is not None:
-            return packaged
+            return ResolvedModelPaths(
+                primary=packaged,
+                detector=_default_yolo_model_path(),
+            )
 
         if args.backend == "auto":
             # Fall back to YOLO weights if the bundled Keras assets are missing.
-            return _default_yolo_model_path()
+            primary = _default_yolo_model_path()
+            return ResolvedModelPaths(primary=primary)
 
         raise FileNotFoundError(
             "No Keras model found. Provide --model, set KERAS_MODEL_PATH or place the "
             "bundled files under 'keras_models/'."
         )
 
-    return _default_yolo_model_path()
+    primary = _default_yolo_model_path()
+    return ResolvedModelPaths(primary=primary)
 
 
 def interpret_source(raw_source: str) -> Union[int, str]:
@@ -821,15 +1047,16 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     source = interpret_source(args.source)
 
     try:
-        model_path = resolve_model_path(args)
+        resolved = resolve_model_paths(args)
         app = ConsoleDetectionApp(
-            model_path=model_path,
+            model_path=resolved.primary,
             confidence=args.confidence,
             iou=args.iou,
             max_detections=args.max_detections,
             device=args.device,
             labels_path=args.labels,
             backend=args.backend,
+            detector_path=resolved.detector,
         )
         source_type = determine_source_type(source)
         if source_type == "image":
