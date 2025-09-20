@@ -25,13 +25,13 @@ def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="YOLOv12 console runner.")
     parser.add_argument(
         "--model-path",
-        default="models/coke_latest.pt",
+        default="models/best.pt",
         help="Path to the YOLOv12 weights to be used for inference.",
     )
     parser.add_argument(
         "--camera-index",
         type=int,
-        default=1,
+        default=0,
         help="Index of the video capture device (0 for the first camera).",
     )
     parser.add_argument(
@@ -61,7 +61,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--confidence-threshold",
         type=float,
-        default=0.70,
+        default=0.60,
         help="Minimum confidence value required to draw a bounding box.",
     )
     parser.add_argument(

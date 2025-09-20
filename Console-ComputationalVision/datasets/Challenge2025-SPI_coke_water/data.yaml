@@ -1,0 +1,13 @@
+train: C:\Dev\OFA-Tech\FiapAutoKraft\Console-ComputationalVision\datasets\Challenge2025-SPI_coke_water\train
+val: C:\Dev\OFA-Tech\FiapAutoKraft\Console-ComputationalVision\datasets\Challenge2025-SPI_coke_water\valid
+test: C:\Dev\OFA-Tech\FiapAutoKraft\Console-ComputationalVision\datasets\Challenge2025-SPI_coke_water\test
+
+nc: 2
+names: ['agua', 'coke']
+
+roboflow:
+  workspace: caitos-personal
+  project: challenge2025-spi-ee60h
+  version: 2
+  license: MIT
+  url: https://universe.roboflow.com/caitos-personal/challenge2025-spi-ee60h/dataset/2
