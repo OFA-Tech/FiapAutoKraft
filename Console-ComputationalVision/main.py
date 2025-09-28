@@ -31,7 +31,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--camera-index",
         type=int,
-        default=0,
+        default=1,
         help="Index of the video capture device (0 for the first camera).",
     )
     parser.add_argument(
