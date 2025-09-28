@@ -75,13 +75,7 @@ class GrblSender:
             logger.warning("Movement exceeds range limit. Centering core instead.")
             self.center_core()
             return
-        commands: list = ["G21", "G91", f"F{feedrate}"]
-        if z is None:
-            commands.append(f"G1 X{x:.3f} Y{y:.3f}")
-        else:
-            commands.append(f"G1 X{x:.3f} Y{y:.3f} Z{z:.3f}")
-        commands.append("G90")
-        commands.append("M2")
+        commands: list = ["G21", "G91", f"F{feedrate}", f"G1 X{x:.3f} Y{y:.3f} Z{z:.3f}", "G90", "M2"]
         logger.info("Sending coordinates X:%.3f Y:%.3f Z:%.3f", x, y, z)
         for command in commands:
             self.send_command(command)
