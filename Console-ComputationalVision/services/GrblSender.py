@@ -1,8 +1,12 @@
+import logging
 from typing import List, Optional
 
 from serial.tools import list_ports
 import time
 import serial
+
+
+logger = logging.getLogger(__name__)
 
 
 class GrblSender:
@@ -39,20 +43,20 @@ class GrblSender:
         try:
             self.ser = serial.Serial(port, baud_rate, timeout=timeout)
         except serial.SerialException as exc:
-            print(f"Error connecting to {port}: {exc}")
+            logger.error("Error connecting to %s: %s", port, exc)
             self.ser = None
             return False
 
         self.port = port
         self._baud_rate = baud_rate
         self._timeout = timeout
-        print(f"Connected to {port} at {baud_rate} baud.")
+        logger.info("Connected to %s at %s baud.", port, baud_rate)
         return True
 
     def close_connection(self) -> None:
         if self.ser and self.ser.is_open:
             self.ser.close()
-            print("Serial port closed.")
+            logger.info("Serial port closed.")
         self.ser = None
         self.port = None
 
@@ -68,7 +72,7 @@ class GrblSender:
                 or sum_y + y < -5
                 or sum_z + z > 4
                 or sum_z + z < -4):
-            print("Movement exceeds 5 range limit. Centering core instead")
+            logger.warning("Movement exceeds range limit. Centering core instead.")
             self.center_core()
             return
         commands: list = ["G21", "G91", f"F{feedrate}"]
@@ -78,7 +82,7 @@ class GrblSender:
             commands.append(f"G1 X{x:.3f} Y{y:.3f} Z{z:.3f}")
         commands.append("G90")
         commands.append("M2")
-        print(f"Sending appending coordinates:  X => {x:.3f}, Y => {y:.3f}, Z => {z:.3f}")
+        logger.info("Sending coordinates X:%.3f Y:%.3f Z:%.3f", x, y, z)
         for command in commands:
             self.send_command(command)
         self.trace_coordinates(x, y, z)
@@ -117,7 +121,7 @@ class GrblSender:
             raise RuntimeError("Port not open. Call connect().")
         # Reset coordinates to center (based on the trace)
         if not self.coordinates:
-            print("core already centered")
+            logger.info("Core already centered.")
             return
         sum_x, sum_y, sum_z = self.sum_traces()
         reverse_x = -1 * sum_x
@@ -148,11 +152,11 @@ if __name__ == "__main__":
     sender = GrblSender()
     available_ports = sender.list_serial_ports()
     if not available_ports:
-        print("No serial ports available")
+        logger.info("No serial ports available")
     else:
         first_port = available_ports[0]["device"]
         if sender.connect(first_port):
-            print(f"Connected to {first_port}")
+            logger.info("Connected to %s", first_port)
             input('Press enter to continue...')
             sender.send_coordinates(-3.0, -3.0)
             sender.send_coordinates(1, 1)

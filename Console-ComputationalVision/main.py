@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import queue
 import threading
 import time
 import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
-from tkinter import filedialog, messagebox, scrolledtext, ttk
+from tkinter import messagebox, scrolledtext, ttk
 from typing import Callable
 
 import cv2
@@ -90,6 +91,20 @@ class FieldSpec:
     caster: Callable[[str], object]
 
 
+class TkQueueHandler(logging.Handler):
+    def __init__(self, target_queue: queue.Queue[str]) -> None:
+        super().__init__()
+        self.target_queue = target_queue
+
+    def emit(self, record: logging.LogRecord) -> None:  # pragma: no cover - GUI feedback
+        try:
+            message = self.format(record)
+        except Exception:  # pragma: no cover - safety
+            self.handleError(record)
+            return
+        self.target_queue.put(message)
+
+
 class VisionGUI:
     def __init__(self, root: tk.Tk, initial_args: argparse.Namespace) -> None:
         self.root = root
@@ -142,6 +157,9 @@ class VisionGUI:
         self.grbl_reader_thread: threading.Thread | None = None
         self.grbl_reader_stop: threading.Event | None = None
         self._serial_ports_lookup: dict[str, dict] = {}
+        self.grbl_coordinate_vars: dict[str, tk.StringVar] = {
+            axis: tk.StringVar(value="0") for axis in ("x", "y", "z")
+        }
 
         self.frame_queue: queue.Queue = queue.Queue(maxsize=2)
         self.photo_image: ImageTk.PhotoImage | None = None
@@ -149,11 +167,22 @@ class VisionGUI:
         self.worker: threading.Thread | None = None
         self.stop_event: threading.Event | None = None
         self.running = False
+        self.last_loaded_model: str = ""
+
+        self.python_log_queue: queue.Queue[str] = queue.Queue()
+        self.python_log_handler = TkQueueHandler(self.python_log_queue)
+        self.python_log_handler.setFormatter(
+            logging.Formatter("%(asctime)s - %(levelname)s - %(message)s", "%H:%M:%S")
+        )
+        logging.getLogger().addHandler(self.python_log_handler)
+        logging.getLogger().setLevel(logging.INFO)
+        self.logger = logging.getLogger(__name__)
 
         self._build_layout()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._schedule_preview_update()
         self._schedule_grbl_log_update()
+        self._schedule_python_log_update()
 
     def _build_layout(self) -> None:
         self.root.columnconfigure(0, weight=1)
@@ -173,8 +202,9 @@ class VisionGUI:
         )
         self.model_combobox.grid(row=row, column=1, sticky="ew", pady=2)
         self.model_combobox.configure(postcommand=self._refresh_model_paths)
-        browse_btn = ttk.Button(control_frame, text="Browse", command=self._browse_model)
-        browse_btn.grid(row=row, column=2, padx=4)
+        self.model_combobox.bind("<<ComboboxSelected>>", lambda _event: self._on_model_selected())
+        refresh_models_btn = ttk.Button(control_frame, text="🔃", width=3, command=self._on_model_refresh_clicked)
+        refresh_models_btn.grid(row=row, column=2, padx=4)
 
         row += 1
         ttk.Label(control_frame, text="Camera").grid(row=row, column=0, sticky="w", pady=2)
@@ -185,7 +215,7 @@ class VisionGUI:
         )
         self.camera_combobox.grid(row=row, column=1, sticky="ew", pady=2)
         self.camera_combobox.bind("<<ComboboxSelected>>", lambda _event: self._on_camera_selected())
-        rescan_btn = ttk.Button(control_frame, text="Rescan", command=self._populate_camera_combobox)
+        rescan_btn = ttk.Button(control_frame, text="🔃", width=3, command=self._populate_camera_combobox)
         rescan_btn.grid(row=row, column=2, padx=4)
 
         row += 1
@@ -301,16 +331,12 @@ class VisionGUI:
         button_bar.grid(row=0, column=0, sticky="ew", padx=4, pady=4)
         button_bar.columnconfigure(0, weight=1)
         button_bar.columnconfigure(1, weight=1)
-        button_bar.columnconfigure(2, weight=1)
-
-        self.load_labels_button = ttk.Button(button_bar, text="Load labels", command=self._load_labels)
-        self.load_labels_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
 
         select_all_btn = ttk.Button(button_bar, text="Select all", command=self._select_all_labels)
-        select_all_btn.grid(row=0, column=1, sticky="ew", padx=(0, 4))
+        select_all_btn.grid(row=0, column=0, sticky="ew", padx=(0, 4))
 
         clear_btn = ttk.Button(button_bar, text="Clear", command=self._clear_label_selection)
-        clear_btn.grid(row=0, column=2, sticky="ew")
+        clear_btn.grid(row=0, column=1, sticky="ew")
 
         listbox_frame = ttk.Frame(label_frame)
         listbox_frame.grid(row=1, column=0, sticky="nsew", padx=4, pady=(0, 4))
@@ -332,10 +358,10 @@ class VisionGUI:
 
         grbl_row = labels_row + 1
         control_frame.rowconfigure(grbl_row, weight=1)
-        grbl_frame = ttk.LabelFrame(control_frame, text="Grbl Sender")
+        grbl_frame = ttk.LabelFrame(control_frame, text="G-code Sender")
         grbl_frame.grid(row=grbl_row, column=0, columnspan=3, sticky="nsew", pady=(10, 0))
         grbl_frame.columnconfigure(1, weight=1)
-        grbl_frame.rowconfigure(4, weight=1)
+        grbl_frame.rowconfigure(5, weight=1)
 
         ttk.Label(grbl_frame, text="Serial port").grid(row=0, column=0, sticky="w", pady=2, padx=4)
         self.serial_port_combo = ttk.Combobox(
@@ -344,7 +370,7 @@ class VisionGUI:
             state="readonly",
         )
         self.serial_port_combo.grid(row=0, column=1, sticky="ew", pady=2, padx=(0, 4))
-        refresh_ports_btn = ttk.Button(grbl_frame, text="Refresh", command=self._refresh_serial_ports)
+        refresh_ports_btn = ttk.Button(grbl_frame, text="🔃", width=3, command=self._refresh_serial_ports)
         refresh_ports_btn.grid(row=0, column=2, pady=2, padx=4)
 
         button_bar = ttk.Frame(grbl_frame)
@@ -361,8 +387,31 @@ class VisionGUI:
         )
         self.disconnect_serial_button.grid(row=0, column=1, sticky="ew")
 
+        coords_frame = ttk.Frame(grbl_frame)
+        coords_frame.grid(row=2, column=0, columnspan=3, sticky="ew", padx=4)
+        for idx, axis in enumerate(("x", "y", "z")):
+            ttk.Label(coords_frame, text=f"{axis.upper()}:").grid(row=0, column=idx * 2, sticky="w", pady=(0, 4))
+            entry = ttk.Entry(coords_frame, textvariable=self.grbl_coordinate_vars[axis], width=6)
+            entry.grid(row=0, column=idx * 2 + 1, sticky="w", padx=(0, 4), pady=(0, 4))
+        coords_frame.columnconfigure(6, weight=1)
+        coords_frame.columnconfigure(7, weight=1)
+        self.send_coordinates_button = ttk.Button(
+            coords_frame,
+            text="Send",
+            command=self._send_coordinate_move,
+            state="disabled",
+        )
+        self.send_coordinates_button.grid(row=0, column=6, sticky="ew", padx=(4, 0))
+        self.home_button = ttk.Button(
+            coords_frame,
+            text="Home",
+            command=self._home_grbl,
+            state="disabled",
+        )
+        self.home_button.grid(row=0, column=7, sticky="ew", padx=(4, 0))
+
         command_frame = ttk.Frame(grbl_frame)
-        command_frame.grid(row=2, column=0, columnspan=3, sticky="ew", padx=4)
+        command_frame.grid(row=3, column=0, columnspan=3, sticky="ew", padx=4)
         command_frame.columnconfigure(0, weight=1)
         command_entry = ttk.Entry(command_frame, textvariable=self.grbl_command_var)
         command_entry.grid(row=0, column=0, sticky="ew", pady=(0, 4))
@@ -374,9 +423,9 @@ class VisionGUI:
         )
         self.send_grbl_button.grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
-        ttk.Label(grbl_frame, text="Logs").grid(row=3, column=0, columnspan=3, sticky="w", padx=4)
+        ttk.Label(grbl_frame, text="G-code Logs").grid(row=4, column=0, columnspan=3, sticky="w", padx=4)
         self.grbl_log_text = scrolledtext.ScrolledText(grbl_frame, height=8, state="disabled", wrap="word")
-        self.grbl_log_text.grid(row=4, column=0, columnspan=3, sticky="nsew", padx=4, pady=(0, 4))
+        self.grbl_log_text.grid(row=5, column=0, columnspan=3, sticky="nsew", padx=4, pady=(0, 4))
 
         self._refresh_model_paths(initial=True)
         self._populate_camera_combobox()
@@ -384,21 +433,34 @@ class VisionGUI:
 
         preview_frame = ttk.LabelFrame(self.root, text="Camera Preview")
         preview_frame.grid(row=0, column=1, sticky="nsew", padx=(0, 10), pady=10)
-        preview_frame.rowconfigure(0, weight=1)
+        preview_frame.rowconfigure(0, weight=3)
+        preview_frame.rowconfigure(1, weight=2)
         preview_frame.columnconfigure(0, weight=1)
 
         self.video_label = ttk.Label(preview_frame)
         self.video_label.grid(row=0, column=0, sticky="nsew")
 
-    def _browse_model(self) -> None:
-        path = filedialog.askopenfilename(
-            title="Select model file",
-            filetypes=(("PyTorch model", "*.pt"), ("All files", "*.*")),
+        python_log_frame = ttk.LabelFrame(preview_frame, text="Python Logs")
+        python_log_frame.grid(row=1, column=0, sticky="nsew", padx=6, pady=(6, 6))
+        python_log_frame.columnconfigure(0, weight=1)
+        python_log_frame.rowconfigure(0, weight=1)
+
+        self.python_log_text = scrolledtext.ScrolledText(
+            python_log_frame,
+            height=10,
+            state="disabled",
+            wrap="word",
         )
-        if path:
-            self._ensure_model_in_list(path)
-            self.arg_vars["model_path"].set(path)
-            self.model_combobox.set(path)
+        self.python_log_text.grid(row=0, column=0, sticky="nsew")
+
+    def _on_model_refresh_clicked(self) -> None:
+        self._refresh_model_paths()
+        self._load_labels_if_possible()
+
+    def _on_model_selected(self) -> None:
+        selection = self.model_combobox.get().strip()
+        self.arg_vars["model_path"].set(selection)
+        self._load_labels_if_possible()
 
     def _ensure_model_in_list(self, path: str) -> None:
         if not path:
@@ -443,6 +505,8 @@ class VisionGUI:
             self.model_combobox.set(self.model_paths[0])
         elif current:
             self.model_combobox.set(current)
+
+        self._load_labels_if_possible()
 
     def _populate_camera_combobox(self) -> None:
         self.camera_options = self._enumerate_cameras()
@@ -646,9 +710,12 @@ class VisionGUI:
             return
 
         self._log_grbl(f"Connected to {port}")
+        self.logger.info("Connected to %s", port)
         self.connect_serial_button.configure(state="disabled")
         self.disconnect_serial_button.configure(state="normal")
         self.send_grbl_button.configure(state="normal")
+        self.send_coordinates_button.configure(state="normal")
+        self.home_button.configure(state="normal")
         self._start_grbl_reader()
         self._refresh_serial_ports()
 
@@ -658,8 +725,11 @@ class VisionGUI:
         self.grbl_sender.close_connection()
         if port:
             self._log_grbl(f"Disconnected from {port}")
+            self.logger.info("Disconnected from %s", port)
         self.disconnect_serial_button.configure(state="disabled")
         self.send_grbl_button.configure(state="disabled")
+        self.send_coordinates_button.configure(state="disabled")
+        self.home_button.configure(state="disabled")
         self.connect_serial_button.configure(state="normal")
         self._refresh_serial_ports()
 
@@ -673,6 +743,7 @@ class VisionGUI:
             return
 
         self._log_grbl(f">> {command}")
+        self.logger.info("Sent command: %s", command)
         try:
             self.grbl_sender.send_command(command, wait_for_ok=False)
         except Exception as exc:  # pragma: no cover - feedback for GUI users
@@ -680,6 +751,54 @@ class VisionGUI:
             return
 
         self.grbl_command_var.set("")
+
+    def _send_coordinate_move(self) -> None:
+        if not (self.grbl_sender.ser and self.grbl_sender.ser.is_open):
+            messagebox.showerror("Serial not connected", "Connect to a serial port before moving.")
+            return
+
+        coords: dict[str, float] = {}
+        for axis in ("x", "y", "z"):
+            raw = self.grbl_coordinate_vars[axis].get().strip()
+            if not raw:
+                coords[axis] = 0.0
+                continue
+            try:
+                coords[axis] = float(raw)
+            except ValueError:
+                messagebox.showerror("Invalid coordinate", f"Enter a numeric value for {axis.upper()}.")
+                return
+
+        self._log_grbl(
+            f">> Move X:{coords['x']:.3f} Y:{coords['y']:.3f} Z:{coords['z']:.3f}"
+        )
+        self.logger.info(
+            "Move command issued X:%.3f Y:%.3f Z:%.3f",
+            coords["x"],
+            coords["y"],
+            coords["z"],
+        )
+        try:
+            self.grbl_sender.send_coordinates(coords["x"], coords["y"], coords["z"])
+        except Exception as exc:  # pragma: no cover - feedback for GUI users
+            messagebox.showerror("Failed to send move", str(exc))
+            return
+
+    def _home_grbl(self) -> None:
+        if not (self.grbl_sender.ser and self.grbl_sender.ser.is_open):
+            messagebox.showerror("Serial not connected", "Connect to a serial port before homing.")
+            return
+
+        self._log_grbl(">> Home")
+        self.logger.info("Home command issued")
+        try:
+            self.grbl_sender.center_core()
+        except Exception as exc:  # pragma: no cover - feedback for GUI users
+            messagebox.showerror("Failed to home", str(exc))
+            return
+
+        for axis in ("x", "y", "z"):
+            self.grbl_coordinate_vars[axis].set("0")
 
     def _log_grbl(self, message: str) -> None:
         timestamp = time.strftime("%H:%M:%S")
@@ -701,6 +820,27 @@ class VisionGUI:
         finally:
             try:
                 self.root.after(100, self._schedule_grbl_log_update)
+            except tk.TclError:
+                return
+
+    def _append_python_log(self, message: str) -> None:
+        if not hasattr(self, "python_log_text"):
+            return
+        self.python_log_text.configure(state="normal")
+        self.python_log_text.insert(tk.END, message + "\n")
+        self.python_log_text.see(tk.END)
+        self.python_log_text.configure(state="disabled")
+
+    def _schedule_python_log_update(self) -> None:
+        try:
+            while True:
+                message = self.python_log_queue.get_nowait()
+                self._append_python_log(message)
+        except queue.Empty:
+            pass
+        finally:
+            try:
+                self.root.after(200, self._schedule_python_log_update)
             except tk.TclError:
                 return
 
@@ -743,6 +883,13 @@ class VisionGUI:
     def _teardown_grbl(self) -> None:
         self._stop_grbl_reader()
         self.grbl_sender.close_connection()
+
+    def _teardown_logging(self) -> None:
+        try:
+            logging.getLogger().removeHandler(self.python_log_handler)
+        except ValueError:
+            pass
+        self.python_log_handler.close()
 
     def _schedule_preview_update(self) -> None:
         try:
@@ -817,7 +964,9 @@ class VisionGUI:
         try:
             self.service = VisionService(args)
             if not self.available_labels:
-                self._populate_label_list(self.service.get_model_labels())
+                labels = self.service.get_model_labels()
+                self._populate_label_list(labels)
+                self.last_loaded_model = self.arg_vars["model_path"].get().strip()
             self._apply_label_selection()
         except Exception as exc:  # pragma: no cover - feedback for GUI users
             messagebox.showerror("Failed to start vision service", str(exc))
@@ -882,6 +1031,7 @@ class VisionGUI:
 
     def _on_close(self) -> None:
         self._teardown_grbl()
+        self._teardown_logging()
         if self.running:
             self.stop_stream()
             self.root.after(100, self._wait_for_thread_and_close)
@@ -894,20 +1044,44 @@ class VisionGUI:
             return
         self.root.destroy()
 
-    def _load_labels(self) -> None:
+    def _load_labels_if_possible(self, *, require_feedback: bool = False) -> None:
         model_path = self.arg_vars["model_path"].get().strip()
         if not model_path:
-            messagebox.showwarning("Model path required", "Please select a model path before loading labels.")
+            if require_feedback:
+                messagebox.showwarning(
+                    "Model path required",
+                    "Please select a model path before loading labels.",
+                )
+            return
+
+        if model_path == self.last_loaded_model:
+            return
+
+        resolved = Path(model_path)
+        if not resolved.is_absolute():
+            resolved = (self._project_root / model_path).resolve()
+
+        if not resolved.exists():
+            if require_feedback:
+                messagebox.showerror(
+                    "Model not found",
+                    f"The selected model could not be located: {resolved}",
+                )
             return
 
         try:
             labels = VisionService.discover_model_labels(model_path)
         except Exception as exc:  # pragma: no cover - user feedback
-            messagebox.showerror("Failed to load labels", str(exc))
+            if require_feedback:
+                messagebox.showerror("Failed to load labels", str(exc))
+            else:
+                self.logger.error("Failed to load labels: %s", exc)
             return
 
+        self.last_loaded_model = model_path
         self._populate_label_list(labels)
         self._apply_label_selection()
+        self.logger.info("Loaded %d labels from %s", len(labels), resolved)
 
     def _populate_label_list(self, labels: list[str]) -> None:
         self.available_labels = labels
