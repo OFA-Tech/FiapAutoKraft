@@ -242,6 +242,7 @@ class VisionGUI:
         root_logger.setLevel(logging.INFO)
         logging.captureWarnings(True)
         self.logger = logging.getLogger(__name__)
+        self.grbl_sender.set_event_hook(self._on_grbl_event)
 
         self._original_stdout = sys.stdout
         self._original_stderr = sys.stderr
@@ -953,6 +954,36 @@ class VisionGUI:
         timestamp = time.strftime("%H:%M:%S")
         self.grbl_log_queue.put(f"[{timestamp}] {message}")
 
+    def _format_event_payload(self, payload: dict) -> str:
+        ordered = dict(payload)
+        parts: list[str] = []
+        for key in ("timestamp", "thread", "command", "port", "ser_id", "status"):
+            if key in ordered:
+                parts.append(f"{key}={ordered.pop(key)}")
+        for key in sorted(ordered):
+            parts.append(f"{key}={ordered[key]}")
+        return " ".join(parts)
+
+    def _emit_command_event(self, name: str, *, request: CommandRequest | None = None, **extra: object) -> None:
+        ser = self.grbl_sender.ser
+        payload: dict[str, object] = {
+            "timestamp": f"{time.monotonic():.6f}",
+            "thread": threading.current_thread().name,
+            "port": self.grbl_sender.port,
+        }
+        if request is not None:
+            payload["command"] = request.name
+        if ser is not None:
+            payload["ser_id"] = id(ser)
+        payload.update(extra)
+        self.logger.info("CMD_EVENT %s %s", name, self._format_event_payload(payload))
+
+    def _on_grbl_event(self, name: str, payload: dict) -> None:
+        payload = dict(payload)
+        payload.setdefault("timestamp", time.monotonic())
+        payload["timestamp"] = f"{float(payload["timestamp"]):.6f}"
+        self.logger.info("GRBL_EVENT %s %s", name, self._format_event_payload(payload))
+
     def _append_grbl_log(self, message: str) -> None:
         self.grbl_log_text.configure(state="normal")
         self.grbl_log_text.insert(tk.END, message + "\n")
@@ -1056,10 +1087,13 @@ class VisionGUI:
 
             start = time.monotonic()
             connected = bool(self.grbl_sender.ser and self.grbl_sender.ser.is_open)
+            busy = self._command_inflight.is_set()
             interval = 0.1 if connected else 1.0
+            if connected and busy:
+                interval = max(interval, 0.2)
             display_values: tuple[str, str, str] = ("-", "-", "-")
             raw_values: tuple[float, float, float] | None = None
-            if connected:
+            if connected and not busy:
                 try:
                     raw_values = self.grbl_sender.sum_traces()
                 except Exception:
@@ -1070,6 +1104,13 @@ class VisionGUI:
             force = self._position_force_refresh.is_set()
             if force:
                 self._position_force_refresh.clear()
+
+            if connected and busy and not force:
+                next_run = start + interval
+                current = time.monotonic()
+                if next_run < current:
+                    next_run = current
+                continue
 
             if force or display_values != last_values or connected != last_connected:
                 last_values = display_values
@@ -1120,6 +1161,7 @@ class VisionGUI:
             success = True
             responses: list[str] = []
             error: Exception | None = None
+            self._emit_command_event("dequeue_at", request=request)
             try:
                 responses = request.execute() or []
             except Exception as exc:  # pragma: no cover - hardware interactions
@@ -1127,6 +1169,12 @@ class VisionGUI:
                 error = exc
 
             duration = time.monotonic() - start
+            self._emit_command_event(
+                "worker_complete",
+                request=request,
+                duration=f"{duration:.6f}",
+                status="success" if success else "error",
+            )
             if success:
                 for line in responses:
                     self._log_grbl(f"<< {line}")
@@ -1171,6 +1219,11 @@ class VisionGUI:
         if request.refresh_position or not success:
             self._position_force_refresh.set()
             self._position_poll_wakeup.set()
+        self._emit_command_event(
+            "ui_updated",
+            request=request,
+            status="success" if success else "error",
+        )
 
     def _update_command_button_state(self) -> None:
         if not hasattr(self, "send_coordinates_button"):
@@ -1190,6 +1243,7 @@ class VisionGUI:
         status_text = request.status_text or f"{request.name}…"
         self.command_status_var.set(status_text)
         self._update_command_button_state()
+        self._emit_command_event("enqueue_at", request=request)
         self._command_queue.put(request)
 
     def _start_grbl_reader(self) -> None:
@@ -1212,6 +1266,10 @@ class VisionGUI:
             ser = self.grbl_sender.ser
             if not ser or not ser.is_open:
                 time.sleep(0.1)
+                continue
+
+            if self._command_inflight.is_set():
+                time.sleep(0.02)
                 continue
 
             try:

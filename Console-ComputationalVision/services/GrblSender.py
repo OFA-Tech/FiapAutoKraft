@@ -1,6 +1,7 @@
 import logging
+import threading
 import time
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 import serial
 from serial.tools import list_ports
@@ -16,6 +17,28 @@ class GrblSender:
         self.coordinates: list[dict] = []
         self._baud_rate = 115200
         self._timeout = 1
+        self._event_hook: Optional[Callable[[str, dict], None]] = None
+
+    def set_event_hook(self, hook: Optional[Callable[[str, dict], None]]) -> None:
+        """Register a callback invoked for low-level serial instrumentation events."""
+
+        self._event_hook = hook
+
+    def _emit_event(self, name: str, **payload) -> None:
+        if not self._event_hook:
+            return
+        event_payload = {
+            "timestamp": time.monotonic(),
+            "thread": threading.current_thread().name,
+            "port": self.port,
+        }
+        if self.ser is not None:
+            event_payload["ser_id"] = id(self.ser)
+        event_payload.update(payload)
+        try:
+            self._event_hook(name, event_payload)
+        except Exception:  # pragma: no cover - diagnostic safety
+            logger.exception("Failed to emit %s instrumentation event", name)
 
     @staticmethod
     def list_serial_ports():
@@ -108,12 +131,16 @@ class GrblSender:
     ) -> List[str]:
         if not self.ser or not self.ser.is_open:
             raise RuntimeError("Port not open. Call connect().")
-        if not command.endswith("\n"):
-            command += "\n"
-        self.ser.write(command.encode("utf-8"))
+        command = command.rstrip("\r\n") + "\r\n"
+        encoded = command.encode("utf-8")
+        self._emit_event("write_start", command=command.strip(), byte_len=len(encoded))
+        self.ser.write(encoded)
+        self.ser.flush()
+        self._emit_event("write_end", command=command.strip(), byte_len=len(encoded))
         if wait_for_ok:
             responses = self.read_until_ok(timeout_s=timeout_s)
             if not any(line == "ok" or line.startswith("error:") for line in responses):
+                self._emit_event("timeout", command=command.strip(), responses=responses)
                 raise TimeoutError(f"Timeout waiting for response to '{command.strip()}'")
             return responses
         return []
@@ -162,6 +189,7 @@ class GrblSender:
         if not self.ser or not self.ser.is_open:
             raise RuntimeError("Port not open. Call connect().")
         lines: List[str] = []
+        saw_first_byte = False
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             raw = self.ser.readline()
@@ -169,8 +197,12 @@ class GrblSender:
                 continue
             s = raw.decode("utf-8", errors="replace").strip()
             if s:
+                if not saw_first_byte:
+                    saw_first_byte = True
+                    self._emit_event("first_byte_in", line=s)
                 lines.append(s)
                 if s == "ok" or s.startswith("error:"):
+                    self._emit_event("ok_parsed", line=s, lines=len(lines))
                     break
         return lines
 #endregion
