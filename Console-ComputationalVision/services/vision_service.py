@@ -86,16 +86,34 @@ def _apply_digital_zoom(frame: np.ndarray, zoom_factor: float) -> np.ndarray:
     return cv2.resize(cropped, (width, height), interpolation=cv2.INTER_LINEAR)
 
 
+def _normalise_label_names(names) -> list[str]:
+    """Normalise any YOLO names structure into a simple list of labels."""
+
+    if isinstance(names, dict):
+        return [names[index] for index in sorted(names)]
+    if isinstance(names, (list, tuple)):
+        return list(names)
+    # Fallback: iterate over mapping-like objects preserving values when possible
+    try:
+        return [value for _, value in sorted(names.items())]
+    except AttributeError:
+        return [str(names)]
+
+
 def _draw_bounding_boxes(
     frame: np.ndarray,
     detections: Iterable,
     names: dict[int, str],
     confidence_threshold: float,
+    selected_labels: Optional[Iterable[str]] = None,
 ) -> tuple[np.ndarray, list[dict]]:
     """Draw only boxes with conf >= max(confidence_threshold, 0.75) and return their coordinates."""
 
     drawn: list[dict] = []
     min_conf = max(confidence_threshold, 0.75)
+    allowed = None
+    if selected_labels:
+        allowed = {label.lower() for label in selected_labels if label}
 
     for detection in detections:
         boxes = getattr(detection, "boxes", None)
@@ -112,6 +130,8 @@ def _draw_bounding_boxes(
             cy = (y1 + y2) // 2
             cls = int(box.cls[0])
             label = names.get(cls, str(cls))
+            if allowed is not None and label.lower() not in allowed:
+                continue
 
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
             cvzone.putTextRect(
@@ -160,6 +180,64 @@ class VisionService:
         self.model = _load_model(args.model_path, self.device)
         _warmup_model(self.model, self.device)
         self.names = self.model.names
+        self._selected_labels: set[str] | None = None
+        self._last_detections: list[dict] = []
+
+    def get_model_labels(self) -> list[str]:
+        """Return the human readable class labels available in the loaded model."""
+
+        return _normalise_label_names(self.names)
+
+    @staticmethod
+    def discover_model_labels(model_path: str) -> list[str]:
+        """Load a YOLO model and return the labels it exposes."""
+
+        model = YOLO(model_path)
+        return _normalise_label_names(getattr(model, "names", {}))
+
+    def select_labels(self, labels: Optional[Iterable[str]]) -> None:
+        """Select labels that should be drawn and tracked during inference."""
+
+        if labels is None:
+            self._selected_labels = None
+            return
+
+        available = self.get_model_labels()
+        lookup = {label.lower(): label for label in available}
+        selected: set[str] = set()
+        for label in labels:
+            if not label:
+                continue
+            resolved = lookup.get(label.lower())
+            if resolved:
+                selected.add(resolved)
+
+        if not selected:
+            raise ValueError(
+                "None of the provided labels are recognised. Available labels: "
+                + ", ".join(available)
+            )
+
+        self._selected_labels = selected
+
+    def get_last_detections(self, labels: Optional[Iterable[str]] = None) -> list[dict]:
+        """Return coordinates of the most recent detections optionally filtered by label."""
+
+        if not self._last_detections:
+            return []
+
+        if labels is None:
+            return list(self._last_detections)
+
+        requested = {label.lower() for label in labels if label}
+        if not requested:
+            return []
+
+        return [
+            detection
+            for detection in self._last_detections
+            if detection["label"].lower() in requested
+        ]
 
     def run(
         self,
@@ -195,8 +273,13 @@ class VisionService:
 
                 if last_inference:
                     frame, detections_info = _draw_bounding_boxes(
-                        frame, last_inference, self.names, self.args.confidence_threshold
+                        frame,
+                        last_inference,
+                        self.names,
+                        self.args.confidence_threshold,
+                        self._selected_labels,
                     )
+                    self._last_detections = detections_info
                     for detection in detections_info:
                         print(
                             detection["label"],
@@ -218,5 +301,6 @@ class VisionService:
                         break
         finally:
             cap.release()
+            self._last_detections = []
             if frame_callback is None:
                 cv2.destroyAllWindows()
