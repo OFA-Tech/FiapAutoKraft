@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 
 import cv2
 import cvzone
@@ -161,7 +161,11 @@ class VisionService:
         _warmup_model(self.model, self.device)
         self.names = self.model.names
 
-    def run(self) -> None:
+    def run(
+        self,
+        frame_callback: Optional[Callable[[np.ndarray], None]] = None,
+        stop_event: Optional["threading.Event"] = None,
+    ) -> None:
         cap = _configure_camera(self.args)
         frame_count = 0
         last_inference = None
@@ -169,6 +173,8 @@ class VisionService:
 
         try:
             while True:
+                if stop_event and stop_event.is_set():
+                    break
                 loop_start = time.perf_counter()
                 ret, frame = cap.read()
                 if not ret:
@@ -204,10 +210,13 @@ class VisionService:
                 frame = _annotate_metadata(frame, metadata)
                 frame = _apply_digital_zoom(frame, self.args.digital_zoom)
 
-                cv2.imshow(self.args.window_name, frame)
-
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    break
+                if frame_callback is not None:
+                    frame_callback(frame)
+                else:
+                    cv2.imshow(self.args.window_name, frame)
+                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                        break
         finally:
             cap.release()
-            cv2.destroyAllWindows()
+            if frame_callback is None:
+                cv2.destroyAllWindows()
