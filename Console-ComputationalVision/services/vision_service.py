@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+import logging
 from typing import Callable, Iterable, Optional
 
 import cv2
@@ -182,6 +183,7 @@ class VisionService:
         self.names = self.model.names
         self._selected_labels: set[str] | None = None
         self._last_detections: list[dict] = []
+        self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
     def get_model_labels(self) -> list[str]:
         """Return the human readable class labels available in the loaded model."""
@@ -256,7 +258,7 @@ class VisionService:
                 loop_start = time.perf_counter()
                 ret, frame = cap.read()
                 if not ret:
-                    print("[WARN] Unable to read frame from camera. Stopping stream.")
+                    self.logger.warning("Unable to read frame from camera. Stopping stream.")
                     break
 
                 frame_count += 1
@@ -281,7 +283,8 @@ class VisionService:
                     )
                     self._last_detections = detections_info
                     for detection in detections_info:
-                        print(
+                        self.logger.info(
+                            "Detection: %s conf=%.2f bbox=%s center=%s",
                             detection["label"],
                             detection["conf"],
                             detection["bbox_xyxy"],
