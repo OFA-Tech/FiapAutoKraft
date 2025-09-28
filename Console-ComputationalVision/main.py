@@ -202,6 +202,10 @@ class VisionGUI:
         self.grbl_coordinate_vars: dict[str, tk.StringVar] = {
             axis: tk.StringVar(value="0") for axis in ("x", "y", "z")
         }
+        self._position_label_prefix = "Current position: "
+        self._disconnected_position_text = f"{self._position_label_prefix}—"
+        self.current_position_var = tk.StringVar(value=self._disconnected_position_text)
+        self._last_reported_position: tuple[float, float, float] | None = None
 
         self.frame_queue: queue.Queue = queue.Queue(maxsize=2)
         self.photo_image: ImageTk.PhotoImage | None = None
@@ -217,6 +221,7 @@ class VisionGUI:
         self.python_log_handler.setFormatter(
             logging.Formatter("%(asctime)s - %(levelname)s - %(message)s", "%H:%M:%S")
         )
+        self.python_log_max_lines = 150
         root_logger = logging.getLogger()
         for handler in list(root_logger.handlers):
             root_logger.removeHandler(handler)
@@ -238,6 +243,8 @@ class VisionGUI:
         self._schedule_preview_update()
         self._schedule_grbl_log_update()
         self._schedule_python_log_update()
+        self._refresh_current_position_display(force=True)
+        self._schedule_position_poll()
 
     def _build_layout(self) -> None:
         self.root.columnconfigure(0, weight=1)
@@ -426,26 +433,50 @@ class VisionGUI:
 
         coords_frame = ttk.Frame(grbl_frame)
         coords_frame.grid(row=2, column=0, columnspan=3, sticky="ew", padx=4)
+        coords_frame.columnconfigure(0, weight=1)
+
+        coords_inputs = ttk.Frame(coords_frame)
+        coords_inputs.grid(row=0, column=0, sticky="w")
         for idx, axis in enumerate(("x", "y", "z")):
-            ttk.Label(coords_frame, text=f"{axis.upper()}:").grid(row=0, column=idx * 2, sticky="w", pady=(0, 4))
-            entry = ttk.Entry(coords_frame, textvariable=self.grbl_coordinate_vars[axis], width=6)
+            ttk.Label(coords_inputs, text=f"{axis.upper()}:").grid(row=0, column=idx * 2, sticky="w", pady=(0, 4))
+            entry = ttk.Entry(coords_inputs, textvariable=self.grbl_coordinate_vars[axis], width=6)
             entry.grid(row=0, column=idx * 2 + 1, sticky="w", padx=(0, 4), pady=(0, 4))
-        coords_frame.columnconfigure(6, weight=1)
-        coords_frame.columnconfigure(7, weight=1)
+
+        coords_actions = ttk.Frame(coords_frame)
+        coords_actions.grid(row=1, column=0, sticky="ew")
+        coords_actions.columnconfigure(0, weight=1)
+
+        self.current_position_label = ttk.Label(
+            coords_actions,
+            textvariable=self.current_position_var,
+            anchor="w",
+            justify="left",
+        )
+        self.current_position_label.grid(row=0, column=0, sticky="w", pady=(0, 4))
+        self.current_position_label.bind(
+            "<Configure>",
+            lambda event: self.current_position_label.configure(wraplength=event.width),
+        )
+
+        button_row = ttk.Frame(coords_actions)
+        button_row.grid(row=0, column=1, sticky="e", padx=(4, 0))
+        button_row.columnconfigure(0, weight=1)
+        button_row.columnconfigure(1, weight=1)
+
         self.send_coordinates_button = ttk.Button(
-            coords_frame,
+            button_row,
             text="Send",
             command=self._send_coordinate_move,
             state="disabled",
         )
-        self.send_coordinates_button.grid(row=0, column=6, sticky="ew", padx=(4, 0))
+        self.send_coordinates_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         self.home_button = ttk.Button(
-            coords_frame,
+            button_row,
             text="Home",
             command=self._home_grbl,
             state="disabled",
         )
-        self.home_button.grid(row=0, column=7, sticky="ew", padx=(4, 0))
+        self.home_button.grid(row=0, column=1, sticky="ew")
 
         command_frame = ttk.Frame(grbl_frame)
         command_frame.grid(row=3, column=0, columnspan=3, sticky="ew", padx=4)
@@ -751,6 +782,7 @@ class VisionGUI:
             messagebox.showerror("Connection failed", f"Unable to connect to {port}.")
             return
 
+        self.grbl_sender.clear_trace()
         self._log_grbl(f"Connected to {port}")
         self.logger.info("Connected to %s", port)
         self.connect_serial_button.configure(state="disabled")
@@ -760,11 +792,13 @@ class VisionGUI:
         self.home_button.configure(state="normal")
         self._start_grbl_reader()
         self._refresh_serial_ports()
+        self._refresh_current_position_display(force=True)
 
     def _disconnect_grbl(self) -> None:
         port = self.grbl_sender.port
         self._stop_grbl_reader()
         self.grbl_sender.close_connection()
+        self.grbl_sender.clear_trace()
         if port:
             self._log_grbl(f"Disconnected from {port}")
             self.logger.info("Disconnected from %s", port)
@@ -774,6 +808,7 @@ class VisionGUI:
         self.home_button.configure(state="disabled")
         self.connect_serial_button.configure(state="normal")
         self._refresh_serial_ports()
+        self._refresh_current_position_display(force=True)
 
     def _send_grbl_command(self) -> None:
         command = self.grbl_command_var.get().strip()
@@ -825,6 +860,7 @@ class VisionGUI:
         except Exception as exc:  # pragma: no cover - feedback for GUI users
             messagebox.showerror("Failed to send move", str(exc))
             return
+        self._refresh_current_position_display(force=True)
 
     def _home_grbl(self) -> None:
         if not (self.grbl_sender.ser and self.grbl_sender.ser.is_open):
@@ -841,6 +877,7 @@ class VisionGUI:
 
         for axis in ("x", "y", "z"):
             self.grbl_coordinate_vars[axis].set("0")
+        self._refresh_current_position_display(force=True)
 
     def _log_grbl(self, message: str) -> None:
         timestamp = time.strftime("%H:%M:%S")
@@ -865,13 +902,82 @@ class VisionGUI:
             except tk.TclError:
                 return
 
+    def _format_position(self, values: tuple[float, float, float]) -> str:
+        axes = ("X", "Y", "Z")
+        parts: list[str] = []
+        for axis, raw in zip(axes, values):
+            if raw is None:
+                parts.append(f"{axis} N/A")
+                continue
+            value = float(raw)
+            if abs(value) < 0.0005:
+                value = 0.0
+            parts.append(f"{axis} {value:.3f} mm")
+        return f"{self._position_label_prefix}{' | '.join(parts)}"
+
+    def _refresh_current_position_display(self, *, force: bool = False) -> None:
+        if not hasattr(self, "current_position_var"):
+            return
+
+        connected = self.grbl_sender.ser and self.grbl_sender.ser.is_open
+        if not connected:
+            if force or self._last_reported_position is not None:
+                self.current_position_var.set(self._disconnected_position_text)
+                self._last_reported_position = None
+            return
+
+        try:
+            raw_position = self.grbl_sender.sum_traces()
+        except Exception:
+            if force:
+                self.current_position_var.set(self._disconnected_position_text)
+                self._last_reported_position = None
+            return
+
+        position = tuple(float(value) if value is not None else 0.0 for value in raw_position)
+        if (
+            not force
+            and self._last_reported_position is not None
+            and all(abs(prev - curr) < 1e-4 for prev, curr in zip(self._last_reported_position, position))
+        ):
+            return
+
+        self._last_reported_position = position
+        self.current_position_var.set(self._format_position(position))
+
+    def _schedule_position_poll(self) -> None:
+        self._refresh_current_position_display()
+        try:
+            self.root.after(250, self._schedule_position_poll)
+        except tk.TclError:
+            return
+
     def _append_python_log(self, message: str) -> None:
         if not hasattr(self, "python_log_text"):
             return
-        self.python_log_text.configure(state="normal")
-        self.python_log_text.insert(tk.END, message + "\n")
-        self.python_log_text.see(tk.END)
-        self.python_log_text.configure(state="disabled")
+        widget = self.python_log_text
+        previous_state = widget.cget("state")
+        widget.configure(state="normal")
+        current_view = widget.yview()
+        should_scroll = current_view[1] >= 0.999
+        widget.insert(tk.END, message + "\n")
+        self._enforce_python_log_limit(widget)
+        if should_scroll:
+            widget.see(tk.END)
+        else:
+            widget.yview_moveto(current_view[0])
+        widget.configure(state=previous_state)
+
+    def _enforce_python_log_limit(self, widget: scrolledtext.ScrolledText) -> None:
+        end_index = widget.index("end-1c")
+        try:
+            line_count = int(end_index.split(".")[0])
+        except (ValueError, IndexError):
+            return
+        if line_count <= self.python_log_max_lines:
+            return
+        excess = line_count - self.python_log_max_lines
+        widget.delete("1.0", f"{excess + 1}.0")
 
     def _schedule_python_log_update(self) -> None:
         try:
@@ -925,6 +1031,8 @@ class VisionGUI:
     def _teardown_grbl(self) -> None:
         self._stop_grbl_reader()
         self.grbl_sender.close_connection()
+        self.grbl_sender.clear_trace()
+        self._refresh_current_position_display(force=True)
 
     def _teardown_logging(self) -> None:
         if hasattr(self, "stdout_redirector"):
