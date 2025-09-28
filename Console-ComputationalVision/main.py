@@ -113,6 +113,8 @@ class VisionGUI:
 
         self.device_var = tk.StringVar(value=initial_args.device or "auto")
         self.status_var = tk.StringVar(value="Idle")
+        self.available_labels: list[str] = []
+        self.selected_labels_cache: list[str] = []
 
         self.frame_queue: queue.Queue = queue.Queue(maxsize=2)
         self.photo_image: ImageTk.PhotoImage | None = None
@@ -169,6 +171,46 @@ class VisionGUI:
         ttk.Label(control_frame, textvariable=self.status_var).grid(
             row=status_row, column=0, columnspan=3, sticky="w", pady=(8, 0)
         )
+
+        labels_row = status_row + 1
+        control_frame.rowconfigure(labels_row, weight=1)
+        label_frame = ttk.LabelFrame(control_frame, text="Label filters")
+        label_frame.grid(row=labels_row, column=0, columnspan=3, sticky="nsew", pady=(10, 0))
+        label_frame.columnconfigure(0, weight=1)
+        label_frame.rowconfigure(1, weight=1)
+
+        button_bar = ttk.Frame(label_frame)
+        button_bar.grid(row=0, column=0, sticky="ew", padx=4, pady=4)
+        button_bar.columnconfigure(0, weight=1)
+        button_bar.columnconfigure(1, weight=1)
+        button_bar.columnconfigure(2, weight=1)
+
+        self.load_labels_button = ttk.Button(button_bar, text="Load labels", command=self._load_labels)
+        self.load_labels_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+
+        select_all_btn = ttk.Button(button_bar, text="Select all", command=self._select_all_labels)
+        select_all_btn.grid(row=0, column=1, sticky="ew", padx=(0, 4))
+
+        clear_btn = ttk.Button(button_bar, text="Clear", command=self._clear_label_selection)
+        clear_btn.grid(row=0, column=2, sticky="ew")
+
+        listbox_frame = ttk.Frame(label_frame)
+        listbox_frame.grid(row=1, column=0, sticky="nsew", padx=4, pady=(0, 4))
+        listbox_frame.columnconfigure(0, weight=1)
+        listbox_frame.rowconfigure(0, weight=1)
+
+        self.labels_listbox = tk.Listbox(
+            listbox_frame,
+            selectmode=tk.MULTIPLE,
+            exportselection=False,
+            height=10,
+        )
+        self.labels_listbox.grid(row=0, column=0, sticky="nsew")
+        self.labels_listbox.bind("<<ListboxSelect>>", lambda _event: self._apply_label_selection())
+
+        scrollbar = ttk.Scrollbar(listbox_frame, orient="vertical", command=self.labels_listbox.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.labels_listbox.configure(yscrollcommand=scrollbar.set)
 
         preview_frame = ttk.LabelFrame(self.root, text="Camera Preview")
         preview_frame.grid(row=0, column=1, sticky="nsew", padx=(0, 10), pady=10)
@@ -230,6 +272,9 @@ class VisionGUI:
 
         try:
             self.service = VisionService(args)
+            if not self.available_labels:
+                self._populate_label_list(self.service.get_model_labels())
+            self._apply_label_selection()
         except Exception as exc:  # pragma: no cover - feedback for GUI users
             messagebox.showerror("Failed to start vision service", str(exc))
             self.service = None
@@ -303,6 +348,64 @@ class VisionGUI:
             self.root.after(100, self._wait_for_thread_and_close)
             return
         self.root.destroy()
+
+    def _load_labels(self) -> None:
+        model_path = self.arg_vars["model_path"].get().strip()
+        if not model_path:
+            messagebox.showwarning("Model path required", "Please select a model path before loading labels.")
+            return
+
+        try:
+            labels = VisionService.discover_model_labels(model_path)
+        except Exception as exc:  # pragma: no cover - user feedback
+            messagebox.showerror("Failed to load labels", str(exc))
+            return
+
+        self._populate_label_list(labels)
+        self._apply_label_selection()
+
+    def _populate_label_list(self, labels: list[str]) -> None:
+        self.available_labels = labels
+        self.labels_listbox.delete(0, tk.END)
+        for label in labels:
+            self.labels_listbox.insert(tk.END, label)
+
+        if not self.selected_labels_cache:
+            return
+
+        lookup = {label: index for index, label in enumerate(labels)}
+        for label in self.selected_labels_cache:
+            index = lookup.get(label)
+            if index is not None:
+                self.labels_listbox.selection_set(index)
+
+    def _get_selected_labels(self) -> list[str]:
+        selection = self.labels_listbox.curselection()
+        return [self.labels_listbox.get(index) for index in selection]
+
+    def _apply_label_selection(self) -> None:
+        if not hasattr(self, "labels_listbox"):
+            return
+
+        selected = self._get_selected_labels()
+        self.selected_labels_cache = selected
+
+        if not self.service:
+            return
+
+        try:
+            self.service.select_labels(selected or None)
+        except ValueError as exc:  # pragma: no cover - GUI feedback
+            messagebox.showerror("Invalid label selection", str(exc))
+
+    def _select_all_labels(self) -> None:
+        for index in range(self.labels_listbox.size()):
+            self.labels_listbox.selection_set(index)
+        self._apply_label_selection()
+
+    def _clear_label_selection(self) -> None:
+        self.labels_listbox.selection_clear(0, tk.END)
+        self._apply_label_selection()
 
 
 def main() -> int:
