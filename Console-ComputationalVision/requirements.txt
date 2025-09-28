@@ -8,3 +8,4 @@ torchaudio
 opencv-python
 numpy
 tensorflow
+Pillow
