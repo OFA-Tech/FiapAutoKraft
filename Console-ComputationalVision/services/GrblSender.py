@@ -1,14 +1,17 @@
-from typing import List
+from typing import List, Optional
 
 from serial.tools import list_ports
 import time
 import serial
 
+
 class GrblSender:
-    def __init__(self):
-        self.port = self.select_serial_port()
-        self.ser = self.connect(self.port)
-        self.coordinates = []
+    def __init__(self) -> None:
+        self.port: Optional[str] = None
+        self.ser: Optional[serial.Serial] = None
+        self.coordinates: list[dict] = []
+        self._baud_rate = 115200
+        self._timeout = 1
 
     @staticmethod
     def list_serial_ports():
@@ -31,44 +34,27 @@ class GrblSender:
             result.append(info)
         return result
 
-    def select_serial_port(self):
-        ports = self.list_serial_ports()
-        if not ports:
-            print("No serial ports found.")
-            return None
-
-        print("Available serial ports:")
-        for idx, p in enumerate(ports, 1):
-            print("-" * 40)
-            print(f"[{idx}] {p['device']} - {p['description']}")
-            print(f"    Manufacturer: {p['manufacturer']}")
-            print(f"    Serial:       {p['serial_number']}")
-            print(f"    HWID:         {p['hwid']}")
-
-        while True:
-            try:
-                choice = int(input("Select port number: "))
-                if 1 <= choice <= len(ports):
-                    return ports[choice - 1]["device"]
-                else:
-                    print(f"Invalid choice. Enter a number between 1 and {len(ports)}.")
-            except ValueError:
-                print("Please enter a valid number.")
-
-    @staticmethod
-    def connect(port, baudRate=115200, timeout=1):
+    def connect(self, port: str, baud_rate: int = 115200, timeout: float = 1) -> bool:
+        self.close_connection()
         try:
-            ser = serial.Serial(port, baudRate, timeout=timeout)
-            print(f"Connected to {port} at {baudRate} baud.")
-            return ser
-        except serial.SerialException as e:
-            print(f"Error connecting to {port}: {e}")
-            return None
+            self.ser = serial.Serial(port, baud_rate, timeout=timeout)
+        except serial.SerialException as exc:
+            print(f"Error connecting to {port}: {exc}")
+            self.ser = None
+            return False
 
-    def close_connection(self):
+        self.port = port
+        self._baud_rate = baud_rate
+        self._timeout = timeout
+        print(f"Connected to {port} at {baud_rate} baud.")
+        return True
+
+    def close_connection(self) -> None:
         if self.ser and self.ser.is_open:
             self.ser.close()
             print("Serial port closed.")
+        self.ser = None
+        self.port = None
 
     def send_coordinates(self, x: float, y: float, z: float = 0, feedrate: float = 200):
         if not self.ser or not self.ser.is_open:
@@ -98,13 +84,15 @@ class GrblSender:
         self.trace_coordinates(x, y, z)
 
 #region Helpers
-    def send_command(self, command):
+    def send_command(self, command: str, wait_for_ok: bool = True) -> List[str]:
         if not self.ser or not self.ser.is_open:
             raise RuntimeError("Port not open. Call connect().")
         if not command.endswith("\n"):
             command += "\n"
         self.ser.write(command.encode("utf-8"))
-        self.read_until_ok()
+        if wait_for_ok:
+            return self.read_until_ok()
+        return []
 
     def trace_coordinates(self, x: float, y: float, z: float = None):
         self.coordinates.append({
@@ -158,11 +146,16 @@ class GrblSender:
 
 if __name__ == "__main__":
     sender = GrblSender()
-    print(f'Selected port: {sender.port}')
-    print(f'Serial object: {sender.ser.is_open}')
-    input('Press enter to continue...')
-    sender.send_coordinates(-3.0, -3.0)
-    sender.send_coordinates(1,1)
-    sender.send_coordinates(3.5,2.0, 4)
-    sender.center_core()
-    sender.close_connection()
+    available_ports = sender.list_serial_ports()
+    if not available_ports:
+        print("No serial ports available")
+    else:
+        first_port = available_ports[0]["device"]
+        if sender.connect(first_port):
+            print(f"Connected to {first_port}")
+            input('Press enter to continue...')
+            sender.send_coordinates(-3.0, -3.0)
+            sender.send_coordinates(1, 1)
+            sender.send_coordinates(3.5, 2.0, 4)
+            sender.center_core()
+            sender.close_connection()

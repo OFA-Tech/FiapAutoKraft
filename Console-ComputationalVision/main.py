@@ -3,13 +3,17 @@ from __future__ import annotations
 import argparse
 import queue
 import threading
+import time
 import tkinter as tk
 from dataclasses import dataclass
-from tkinter import filedialog, messagebox, ttk
+from pathlib import Path
+from tkinter import filedialog, messagebox, scrolledtext, ttk
 from typing import Callable
 
+import cv2
 from PIL import Image, ImageTk
 
+from services.GrblSender import GrblSender
 from services.vision_service import VisionService
 
 
@@ -92,29 +96,52 @@ class VisionGUI:
         self.root.title(initial_args.window_name)
         self.initial_args = initial_args
 
+        self._project_root = Path(__file__).resolve().parent
         self._field_specs = [
-            FieldSpec("Model path", "model_path", str),
-            FieldSpec("Camera index", "camera_index", int),
             FieldSpec("Frame width", "frame_width", int),
             FieldSpec("Frame height", "frame_height", int),
-            FieldSpec("Target FPS", "target_fps", float),
             FieldSpec("Inference interval", "inference_interval", int),
             FieldSpec("Confidence threshold", "confidence_threshold", float),
             FieldSpec("Digital zoom", "digital_zoom", float),
-            FieldSpec("Window title", "window_name", str),
         ]
 
+        self.window_title = initial_args.window_name
+        fps_value = str(int(float(getattr(initial_args, "target_fps", 30))))
+        if fps_value not in {"15", "30", "60"}:
+            fps_value = "30"
+
         self.arg_vars: dict[str, tk.StringVar] = {}
-        for spec in self._field_specs:
-            value = getattr(initial_args, spec.key)
-            if value is None:
-                value = ""
-            self.arg_vars[spec.key] = tk.StringVar(value=str(value))
+        initial_map = {
+            "model_path": getattr(initial_args, "model_path", ""),
+            "camera_index": str(getattr(initial_args, "camera_index", 0)),
+            "frame_width": str(getattr(initial_args, "frame_width", 0)),
+            "frame_height": str(getattr(initial_args, "frame_height", 0)),
+            "target_fps": fps_value,
+            "inference_interval": str(getattr(initial_args, "inference_interval", 3)),
+            "confidence_threshold": str(getattr(initial_args, "confidence_threshold", 0.6)),
+            "digital_zoom": f"{float(getattr(initial_args, 'digital_zoom', 1.0)):.1f}",
+            "window_name": self.window_title,
+        }
+
+        for key, value in initial_map.items():
+            self.arg_vars[key] = tk.StringVar(value=value)
 
         self.device_var = tk.StringVar(value=initial_args.device or "auto")
         self.status_var = tk.StringVar(value="Idle")
+        self.camera_choice_var = tk.StringVar()
         self.available_labels: list[str] = []
         self.selected_labels_cache: list[str] = []
+
+        self.model_paths: list[str] = []
+        self.camera_options: list[dict] = []
+
+        self.serial_port_var = tk.StringVar()
+        self.grbl_command_var = tk.StringVar()
+        self.grbl_log_queue: queue.Queue[str] = queue.Queue()
+        self.grbl_sender = GrblSender()
+        self.grbl_reader_thread: threading.Thread | None = None
+        self.grbl_reader_stop: threading.Event | None = None
+        self._serial_ports_lookup: dict[str, dict] = {}
 
         self.frame_queue: queue.Queue = queue.Queue(maxsize=2)
         self.photo_image: ImageTk.PhotoImage | None = None
@@ -126,6 +153,7 @@ class VisionGUI:
         self._build_layout()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._schedule_preview_update()
+        self._schedule_grbl_log_update()
 
     def _build_layout(self) -> None:
         self.root.columnconfigure(0, weight=1)
@@ -136,28 +164,117 @@ class VisionGUI:
         control_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
         control_frame.columnconfigure(1, weight=1)
 
-        for row, spec in enumerate(self._field_specs):
-            ttk.Label(control_frame, text=spec.label).grid(row=row, column=0, sticky="w", pady=2)
-            entry = ttk.Entry(control_frame, textvariable=self.arg_vars[spec.key])
-            entry.grid(row=row, column=1, sticky="ew", pady=2)
-            if spec.key == "model_path":
-                browse_btn = ttk.Button(control_frame, text="Browse", command=self._browse_model)
-                browse_btn.grid(row=row, column=2, padx=4)
+        row = 0
+        ttk.Label(control_frame, text="Model path").grid(row=row, column=0, sticky="w", pady=2)
+        self.model_combobox = ttk.Combobox(
+            control_frame,
+            textvariable=self.arg_vars["model_path"],
+            state="readonly",
+        )
+        self.model_combobox.grid(row=row, column=1, sticky="ew", pady=2)
+        self.model_combobox.configure(postcommand=self._refresh_model_paths)
+        browse_btn = ttk.Button(control_frame, text="Browse", command=self._browse_model)
+        browse_btn.grid(row=row, column=2, padx=4)
 
-        device_row = len(self._field_specs)
-        ttk.Label(control_frame, text="Device").grid(row=device_row, column=0, sticky="w", pady=2)
+        row += 1
+        ttk.Label(control_frame, text="Camera").grid(row=row, column=0, sticky="w", pady=2)
+        self.camera_combobox = ttk.Combobox(
+            control_frame,
+            textvariable=self.camera_choice_var,
+            state="readonly",
+        )
+        self.camera_combobox.grid(row=row, column=1, sticky="ew", pady=2)
+        self.camera_combobox.bind("<<ComboboxSelected>>", lambda _event: self._on_camera_selected())
+        rescan_btn = ttk.Button(control_frame, text="Rescan", command=self._populate_camera_combobox)
+        rescan_btn.grid(row=row, column=2, padx=4)
+
+        row += 1
+        ttk.Label(control_frame, text="Frame width").grid(row=row, column=0, sticky="w", pady=2)
+        self.frame_width_entry = ttk.Entry(
+            control_frame,
+            textvariable=self.arg_vars["frame_width"],
+            state="disabled",
+        )
+        self.frame_width_entry.grid(row=row, column=1, sticky="ew", pady=2)
+
+        row += 1
+        ttk.Label(control_frame, text="Frame height").grid(row=row, column=0, sticky="w", pady=2)
+        self.frame_height_entry = ttk.Entry(
+            control_frame,
+            textvariable=self.arg_vars["frame_height"],
+            state="disabled",
+        )
+        self.frame_height_entry.grid(row=row, column=1, sticky="ew", pady=2)
+
+        row += 1
+        ttk.Label(control_frame, text="Target FPS").grid(row=row, column=0, sticky="w", pady=2)
+        self.target_fps_combobox = ttk.Combobox(
+            control_frame,
+            textvariable=self.arg_vars["target_fps"],
+            values=("15", "30", "60"),
+            state="readonly",
+        )
+        self.target_fps_combobox.grid(row=row, column=1, sticky="ew", pady=2)
+        if self.arg_vars["target_fps"].get() not in {"15", "30", "60"}:
+            self.target_fps_combobox.set("30")
+
+        row += 1
+        ttk.Label(control_frame, text="Inference interval").grid(row=row, column=0, sticky="w", pady=2)
+        self.inference_entry = ttk.Entry(control_frame, textvariable=self.arg_vars["inference_interval"])
+        self.inference_entry.grid(row=row, column=1, sticky="ew", pady=2)
+        inference_help = ttk.Button(
+            control_frame,
+            text="?",
+            width=3,
+            command=self._show_inference_interval_info,
+        )
+        inference_help.grid(row=row, column=2, padx=4)
+
+        row += 1
+        ttk.Label(control_frame, text="Confidence threshold").grid(row=row, column=0, sticky="w", pady=2)
+        self.confidence_entry = ttk.Entry(control_frame, textvariable=self.arg_vars["confidence_threshold"])
+        self.confidence_entry.grid(row=row, column=1, sticky="ew", pady=2)
+        confidence_help = ttk.Button(
+            control_frame,
+            text="?",
+            width=3,
+            command=self._show_confidence_info,
+        )
+        confidence_help.grid(row=row, column=2, padx=4)
+
+        row += 1
+        ttk.Label(control_frame, text="Digital zoom").grid(row=row, column=0, sticky="w", pady=2)
+        self.zoom_spinbox = ttk.Spinbox(
+            control_frame,
+            textvariable=self.arg_vars["digital_zoom"],
+            from_=1.0,
+            to=2.5,
+            increment=0.1,
+            format="%.1f",
+        )
+        self.zoom_spinbox.grid(row=row, column=1, sticky="ew", pady=2)
+
+        row += 1
+        ttk.Label(control_frame, text="Device").grid(row=row, column=0, sticky="w", pady=2)
         device_box = ttk.Combobox(
             control_frame,
             textvariable=self.device_var,
             values=("auto", "cpu", "cuda"),
             state="readonly",
         )
-        device_box.grid(row=device_row, column=1, sticky="ew", pady=2)
+        device_box.grid(row=row, column=1, sticky="ew", pady=2)
         device_box.current(("auto", "cpu", "cuda").index(self.device_var.get() or "auto"))
+        device_help = ttk.Button(
+            control_frame,
+            text="?",
+            width=3,
+            command=self._show_device_info,
+        )
+        device_help.grid(row=row, column=2, padx=4)
 
-        button_row = device_row + 1
+        row += 1
         button_frame = ttk.Frame(control_frame)
-        button_frame.grid(row=button_row, column=0, columnspan=3, pady=(10, 0), sticky="ew")
+        button_frame.grid(row=row, column=0, columnspan=3, pady=(10, 0), sticky="ew")
         button_frame.columnconfigure(0, weight=1)
         button_frame.columnconfigure(1, weight=1)
 
@@ -167,10 +284,11 @@ class VisionGUI:
         self.stop_button = ttk.Button(button_frame, text="Stop", command=self.stop_stream, state="disabled")
         self.stop_button.grid(row=0, column=1, sticky="ew")
 
-        status_row = button_row + 1
-        ttk.Label(control_frame, textvariable=self.status_var).grid(
-            row=status_row, column=0, columnspan=3, sticky="w", pady=(8, 0)
-        )
+        status_row = row + 1
+        status_frame = ttk.Frame(control_frame)
+        status_frame.grid(row=status_row, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        ttk.Label(status_frame, text="State:").grid(row=0, column=0, sticky="w")
+        ttk.Label(status_frame, textvariable=self.status_var).grid(row=0, column=1, sticky="w", padx=(4, 0))
 
         labels_row = status_row + 1
         control_frame.rowconfigure(labels_row, weight=1)
@@ -212,6 +330,58 @@ class VisionGUI:
         scrollbar.grid(row=0, column=1, sticky="ns")
         self.labels_listbox.configure(yscrollcommand=scrollbar.set)
 
+        grbl_row = labels_row + 1
+        control_frame.rowconfigure(grbl_row, weight=1)
+        grbl_frame = ttk.LabelFrame(control_frame, text="Grbl Sender")
+        grbl_frame.grid(row=grbl_row, column=0, columnspan=3, sticky="nsew", pady=(10, 0))
+        grbl_frame.columnconfigure(1, weight=1)
+        grbl_frame.rowconfigure(4, weight=1)
+
+        ttk.Label(grbl_frame, text="Serial port").grid(row=0, column=0, sticky="w", pady=2, padx=4)
+        self.serial_port_combo = ttk.Combobox(
+            grbl_frame,
+            textvariable=self.serial_port_var,
+            state="readonly",
+        )
+        self.serial_port_combo.grid(row=0, column=1, sticky="ew", pady=2, padx=(0, 4))
+        refresh_ports_btn = ttk.Button(grbl_frame, text="Refresh", command=self._refresh_serial_ports)
+        refresh_ports_btn.grid(row=0, column=2, pady=2, padx=4)
+
+        button_bar = ttk.Frame(grbl_frame)
+        button_bar.grid(row=1, column=0, columnspan=3, sticky="ew", padx=4, pady=4)
+        button_bar.columnconfigure(0, weight=1)
+        button_bar.columnconfigure(1, weight=1)
+        self.connect_serial_button = ttk.Button(button_bar, text="Connect", command=self._connect_grbl)
+        self.connect_serial_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        self.disconnect_serial_button = ttk.Button(
+            button_bar,
+            text="Disconnect",
+            command=self._disconnect_grbl,
+            state="disabled",
+        )
+        self.disconnect_serial_button.grid(row=0, column=1, sticky="ew")
+
+        command_frame = ttk.Frame(grbl_frame)
+        command_frame.grid(row=2, column=0, columnspan=3, sticky="ew", padx=4)
+        command_frame.columnconfigure(0, weight=1)
+        command_entry = ttk.Entry(command_frame, textvariable=self.grbl_command_var)
+        command_entry.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        self.send_grbl_button = ttk.Button(
+            command_frame,
+            text="Send",
+            command=self._send_grbl_command,
+            state="disabled",
+        )
+        self.send_grbl_button.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+
+        ttk.Label(grbl_frame, text="Logs").grid(row=3, column=0, columnspan=3, sticky="w", padx=4)
+        self.grbl_log_text = scrolledtext.ScrolledText(grbl_frame, height=8, state="disabled", wrap="word")
+        self.grbl_log_text.grid(row=4, column=0, columnspan=3, sticky="nsew", padx=4, pady=(0, 4))
+
+        self._refresh_model_paths(initial=True)
+        self._populate_camera_combobox()
+        self._refresh_serial_ports()
+
         preview_frame = ttk.LabelFrame(self.root, text="Camera Preview")
         preview_frame.grid(row=0, column=1, sticky="nsew", padx=(0, 10), pady=10)
         preview_frame.rowconfigure(0, weight=1)
@@ -221,9 +391,358 @@ class VisionGUI:
         self.video_label.grid(row=0, column=0, sticky="nsew")
 
     def _browse_model(self) -> None:
-        path = filedialog.askopenfilename(title="Select model file")
+        path = filedialog.askopenfilename(
+            title="Select model file",
+            filetypes=(("PyTorch model", "*.pt"), ("All files", "*.*")),
+        )
         if path:
+            self._ensure_model_in_list(path)
             self.arg_vars["model_path"].set(path)
+            self.model_combobox.set(path)
+
+    def _ensure_model_in_list(self, path: str) -> None:
+        if not path:
+            return
+        if path not in self.model_paths:
+            self.model_paths.append(path)
+            self.model_paths.sort()
+        self.model_combobox.configure(values=self.model_paths)
+
+    def _discover_model_files(self) -> list[str]:
+        model_dir = self._project_root / "models"
+        if not model_dir.exists():
+            return []
+
+        discovered: list[str] = []
+        for file_path in sorted(model_dir.rglob("*.pt")):
+            try:
+                relative = file_path.relative_to(self._project_root)
+                discovered.append(relative.as_posix())
+            except ValueError:
+                discovered.append(file_path.as_posix())
+        return discovered
+
+    def _refresh_model_paths(self, initial: bool = False) -> None:
+        discovered = self._discover_model_files()
+        extras = [path for path in self.model_paths if path not in discovered]
+        combined = discovered + extras
+
+        current = self.arg_vars["model_path"].get().strip()
+        if current and current not in combined:
+            combined.insert(0, current)
+
+        self.model_paths = combined
+        self.model_combobox.configure(values=self.model_paths)
+
+        if not self.model_paths:
+            self.model_combobox.set("")
+            return
+
+        if initial and not current:
+            self.arg_vars["model_path"].set(self.model_paths[0])
+            self.model_combobox.set(self.model_paths[0])
+        elif current:
+            self.model_combobox.set(current)
+
+    def _populate_camera_combobox(self) -> None:
+        self.camera_options = self._enumerate_cameras()
+        if not self.camera_options:
+            self.camera_combobox.configure(values=("No cameras detected",), state="disabled")
+            self.camera_choice_var.set("No cameras detected")
+            self.arg_vars["camera_index"].set("")
+            self.frame_width_entry.configure(state="disabled")
+            self.frame_height_entry.configure(state="disabled")
+            return
+
+        labels = [option["label"] for option in self.camera_options]
+        self.camera_combobox.configure(values=labels, state="readonly")
+
+        current_index = self.arg_vars["camera_index"].get()
+        selected = None
+        if current_index:
+            for option in self.camera_options:
+                if str(option["index"]) == current_index:
+                    selected = option
+                    break
+        if selected is None:
+            selected = self.camera_options[0]
+
+        self.camera_choice_var.set(selected["label"])
+        self._apply_camera_selection(selected)
+
+    def _enumerate_cameras(self, max_devices: int = 10) -> list[dict]:
+        cameras: list[dict] = []
+        for index in range(max_devices):
+            cap = cv2.VideoCapture(index)
+            if not cap.isOpened():
+                cap.release()
+                v4l2_backend = getattr(cv2, "CAP_V4L2", None)
+                if v4l2_backend is not None:
+                    cap = cv2.VideoCapture(index, v4l2_backend)
+                else:
+                    cap = cv2.VideoCapture(index)
+            if not cap.isOpened():
+                cap.release()
+                continue
+
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            backend_name = ""
+            get_backend = getattr(cap, "getBackendName", None)
+            if callable(get_backend):
+                try:
+                    backend_name = str(get_backend())
+                except Exception:
+                    backend_name = ""
+            cap.release()
+
+            if width <= 0:
+                width = int(self.initial_args.frame_width)
+            if height <= 0:
+                height = int(self.initial_args.frame_height)
+
+            name = self._resolve_camera_name(index)
+            descriptor_parts = [name]
+            if backend_name:
+                descriptor_parts.append(backend_name)
+            descriptor = " - ".join(part for part in descriptor_parts if part)
+            resolution = f"{width}x{height}"
+            label = f"{index}: {descriptor} ({resolution})"
+            cameras.append(
+                {
+                    "index": index,
+                    "name": name,
+                    "label": label,
+                    "default_resolution": (width, height),
+                }
+            )
+        return cameras
+
+    def _resolve_camera_name(self, index: int) -> str:
+        sysfs_name = Path(f"/sys/class/video4linux/video{index}/name")
+        if sysfs_name.exists():
+            try:
+                return sysfs_name.read_text(encoding="utf-8").strip()
+            except OSError:
+                pass
+        return f"Camera {index}"
+
+    def _on_camera_selected(self) -> None:
+        if not self.camera_options:
+            return
+        label = self.camera_choice_var.get()
+        for option in self.camera_options:
+            if option["label"] == label:
+                self._apply_camera_selection(option)
+                break
+
+    def _apply_camera_selection(self, camera_info: dict) -> None:
+        self.arg_vars["camera_index"].set(str(camera_info["index"]))
+        width, height = camera_info.get("default_resolution", (0, 0))
+        if width <= 0:
+            width = int(self.initial_args.frame_width)
+        if height <= 0:
+            height = int(self.initial_args.frame_height)
+
+        self.frame_width_entry.configure(state="normal")
+        self.frame_height_entry.configure(state="normal")
+        self.arg_vars["frame_width"].set(str(int(width)))
+        self.arg_vars["frame_height"].set(str(int(height)))
+
+    def _show_inference_interval_info(self) -> None:
+        messagebox.showinfo(
+            "Inference interval",
+            (
+                "Runs a full YOLO inference every N frames. Use lower values for "
+                "maximum responsiveness or higher values to save computing resources."
+            ),
+        )
+
+    def _show_confidence_info(self) -> None:
+        messagebox.showinfo(
+            "Confidence threshold",
+            (
+                "Sets the minimum detection confidence required before a bounding box "
+                "is drawn. Increase the value to reduce false positives; decrease it "
+                "to show more tentative detections."
+            ),
+        )
+
+    def _show_device_info(self) -> None:
+        messagebox.showinfo(
+            "Device (Vision Compiler)",
+            (
+                "Selects the hardware used by the Vision Compiler for inference. "
+                "Choose CUDA to leverage a compatible NVIDIA GPU, CPU to run on the "
+                "processor, or Auto to pick the best option automatically."
+            ),
+        )
+
+    def _refresh_serial_ports(self) -> None:
+        ports = GrblSender.list_serial_ports()
+        self._serial_ports_lookup = {}
+        connected = self.grbl_sender.ser and self.grbl_sender.ser.is_open
+        connected_label = None
+
+        labels: list[str] = []
+        for port in ports:
+            description = port.get("description") or port.get("manufacturer") or "Unknown device"
+            label = f"{port['device']} ({description})"
+            labels.append(label)
+            self._serial_ports_lookup[label] = port
+            if port.get("device") == self.grbl_sender.port:
+                connected_label = label
+
+        if connected and self.grbl_sender.port and connected_label is None:
+            connected_label = f"{self.grbl_sender.port} (connected)"
+            labels.append(connected_label)
+            self._serial_ports_lookup[connected_label] = {"device": self.grbl_sender.port}
+
+        if not labels:
+            if connected and self.grbl_sender.port:
+                label = f"{self.grbl_sender.port} (connected)"
+                self.serial_port_combo.configure(values=(label,), state="readonly")
+                self.serial_port_var.set(label)
+                self.serial_port_combo.set(label)
+                self.connect_serial_button.configure(state="disabled")
+            else:
+                self.serial_port_combo.configure(values=("No ports detected",), state="disabled")
+                self.serial_port_var.set("No ports detected")
+                self.connect_serial_button.configure(state="disabled")
+            return
+
+        self.serial_port_combo.configure(values=labels, state="readonly")
+
+        if connected_label:
+            self.serial_port_var.set(connected_label)
+            self.serial_port_combo.set(connected_label)
+        else:
+            current = self.serial_port_var.get()
+            if current in labels:
+                self.serial_port_combo.set(current)
+            else:
+                self.serial_port_var.set(labels[0])
+                self.serial_port_combo.set(labels[0])
+
+        if connected:
+            self.connect_serial_button.configure(state="disabled")
+        else:
+            self.connect_serial_button.configure(state="normal")
+
+    def _connect_grbl(self) -> None:
+        if not self._serial_ports_lookup:
+            messagebox.showwarning("No serial ports", "No serial ports are available to connect.")
+            return
+
+        selection = self.serial_port_var.get()
+        port_info = self._serial_ports_lookup.get(selection)
+        if not port_info:
+            messagebox.showwarning("Select serial port", "Please choose a serial port to connect to.")
+            return
+
+        port = port_info["device"]
+        if not self.grbl_sender.connect(port):
+            messagebox.showerror("Connection failed", f"Unable to connect to {port}.")
+            return
+
+        self._log_grbl(f"Connected to {port}")
+        self.connect_serial_button.configure(state="disabled")
+        self.disconnect_serial_button.configure(state="normal")
+        self.send_grbl_button.configure(state="normal")
+        self._start_grbl_reader()
+        self._refresh_serial_ports()
+
+    def _disconnect_grbl(self) -> None:
+        port = self.grbl_sender.port
+        self._stop_grbl_reader()
+        self.grbl_sender.close_connection()
+        if port:
+            self._log_grbl(f"Disconnected from {port}")
+        self.disconnect_serial_button.configure(state="disabled")
+        self.send_grbl_button.configure(state="disabled")
+        self.connect_serial_button.configure(state="normal")
+        self._refresh_serial_ports()
+
+    def _send_grbl_command(self) -> None:
+        command = self.grbl_command_var.get().strip()
+        if not command:
+            return
+
+        if not (self.grbl_sender.ser and self.grbl_sender.ser.is_open):
+            messagebox.showerror("Serial not connected", "Connect to a serial port before sending commands.")
+            return
+
+        self._log_grbl(f">> {command}")
+        try:
+            self.grbl_sender.send_command(command, wait_for_ok=False)
+        except Exception as exc:  # pragma: no cover - feedback for GUI users
+            messagebox.showerror("Failed to send command", str(exc))
+            return
+
+        self.grbl_command_var.set("")
+
+    def _log_grbl(self, message: str) -> None:
+        timestamp = time.strftime("%H:%M:%S")
+        self.grbl_log_queue.put(f"[{timestamp}] {message}")
+
+    def _append_grbl_log(self, message: str) -> None:
+        self.grbl_log_text.configure(state="normal")
+        self.grbl_log_text.insert(tk.END, message + "\n")
+        self.grbl_log_text.see(tk.END)
+        self.grbl_log_text.configure(state="disabled")
+
+    def _schedule_grbl_log_update(self) -> None:
+        try:
+            while True:
+                message = self.grbl_log_queue.get_nowait()
+                self._append_grbl_log(message)
+        except queue.Empty:
+            pass
+        finally:
+            try:
+                self.root.after(100, self._schedule_grbl_log_update)
+            except tk.TclError:
+                return
+
+    def _start_grbl_reader(self) -> None:
+        if self.grbl_reader_thread and self.grbl_reader_thread.is_alive():
+            return
+
+        self.grbl_reader_stop = threading.Event()
+        self.grbl_reader_thread = threading.Thread(target=self._grbl_reader_loop, daemon=True)
+        self.grbl_reader_thread.start()
+
+    def _stop_grbl_reader(self) -> None:
+        if self.grbl_reader_stop is not None:
+            self.grbl_reader_stop.set()
+        self.grbl_reader_stop = None
+        self.grbl_reader_thread = None
+
+    def _grbl_reader_loop(self) -> None:
+        assert self.grbl_reader_stop is not None
+        while not self.grbl_reader_stop.is_set():
+            ser = self.grbl_sender.ser
+            if not ser or not ser.is_open:
+                time.sleep(0.1)
+                continue
+
+            try:
+                raw = ser.readline()
+            except Exception as exc:  # pragma: no cover - hardware feedback
+                self._log_grbl(f"Serial error: {exc}")
+                self.grbl_reader_stop.set()
+                break
+
+            if not raw:
+                continue
+
+            text = raw.decode("utf-8", errors="replace").strip()
+            if text:
+                self._log_grbl(f"<< {text}")
+
+    def _teardown_grbl(self) -> None:
+        self._stop_grbl_reader()
+        self.grbl_sender.close_connection()
 
     def _schedule_preview_update(self) -> None:
         try:
@@ -239,20 +758,45 @@ class VisionGUI:
 
     def _collect_args(self) -> argparse.Namespace:
         values: dict[str, object] = {}
+
+        model_path = self.arg_vars["model_path"].get().strip()
+        if not model_path:
+            raise ValueError("Model path cannot be empty.")
+        values["model_path"] = model_path
+
+        camera_index_raw = self.arg_vars["camera_index"].get().strip()
+        if not camera_index_raw:
+            raise ValueError("Camera index cannot be empty.")
+        try:
+            values["camera_index"] = int(camera_index_raw)
+        except ValueError as exc:
+            raise ValueError("Invalid value for Camera index.") from exc
+
         for spec in self._field_specs:
             raw_value = self.arg_vars[spec.key].get().strip()
             if not raw_value:
                 raise ValueError(f"{spec.label} cannot be empty.")
-            if spec.caster is str:
-                values[spec.key] = raw_value
-            else:
-                try:
-                    values[spec.key] = spec.caster(raw_value)
-                except ValueError as exc:
-                    raise ValueError(f"Invalid value for {spec.label}.") from exc
+            try:
+                values[spec.key] = spec.caster(raw_value)
+            except ValueError as exc:
+                raise ValueError(f"Invalid value for {spec.label}.") from exc
+
+        zoom_value = float(values.get("digital_zoom", 1.0))
+        if not 1.0 <= zoom_value <= 2.5:
+            raise ValueError("Digital zoom must be between 1.0 and 2.5.")
+        values["digital_zoom"] = zoom_value
+
+        target_fps_raw = self.arg_vars["target_fps"].get().strip()
+        if not target_fps_raw:
+            raise ValueError("Target FPS must be selected.")
+        try:
+            values["target_fps"] = float(target_fps_raw)
+        except ValueError as exc:
+            raise ValueError("Invalid value for Target FPS.") from exc
 
         device_value = self.device_var.get()
         values["device"] = None if device_value == "auto" else device_value
+        values["window_name"] = self.window_title
 
         args = argparse.Namespace(**values)
         return args
@@ -337,6 +881,7 @@ class VisionGUI:
         self.stop_event = None
 
     def _on_close(self) -> None:
+        self._teardown_grbl()
         if self.running:
             self.stop_stream()
             self.root.after(100, self._wait_for_thread_and_close)
