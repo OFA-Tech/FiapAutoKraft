@@ -23,7 +23,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--camera-index",
         type=int,
-        default=1,
+        default=0,
         help="Index of the video capture device (0 for the first camera).",
     )
     parser.add_argument(
@@ -260,7 +260,9 @@ class VisionGUI:
         try:
             self.service.run(frame_callback=self._on_frame, stop_event=self.stop_event)
         except Exception as exc:  # pragma: no cover - feedback for GUI users
-            self.root.after(0, lambda: messagebox.showerror("Vision service error", str(exc)))
+            message = str(exc)
+            self.root.after(0, lambda msg=message: messagebox.showerror("Vision service error", msg))
+            self.root.after(0, lambda msg=message: self.status_var.set(f"Error: {msg}"))
         finally:
             self.root.after(0, self._on_service_stopped)
 
@@ -281,7 +283,8 @@ class VisionGUI:
 
     def _on_service_stopped(self) -> None:
         self.running = False
-        self.status_var.set("Idle")
+        if not self.status_var.get().startswith("Error:"):
+            self.status_var.set("Idle")
         self.start_button.configure(state="normal")
         self.stop_button.configure(state="disabled")
         self.service = None
