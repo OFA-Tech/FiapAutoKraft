@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 import queue
+import sys
 import threading
 import time
 import tkinter as tk
@@ -105,6 +106,47 @@ class TkQueueHandler(logging.Handler):
         self.target_queue.put(message)
 
 
+class QueueStreamRedirector:
+    """Redirect sys.stdout/sys.stderr writes into the GUI log queue."""
+
+    def __init__(self, target_queue: queue.Queue[str], label: str) -> None:
+        self.target_queue = target_queue
+        self.label = label
+        self._buffer = ""
+
+    def write(self, message: str) -> None:  # pragma: no cover - GUI feedback helper
+        if not message:
+            return
+        if not isinstance(message, str):
+            message = str(message)
+        normalised = message.replace("\r", "\n")
+        if not normalised:
+            return
+        self._buffer += normalised
+        while "\n" in self._buffer:
+            line, self._buffer = self._buffer.split("\n", 1)
+            self._emit(line)
+
+    def flush(self) -> None:  # pragma: no cover - GUI feedback helper
+        if self._buffer:
+            self._emit(self._buffer)
+            self._buffer = ""
+
+    def writelines(self, lines) -> None:  # pragma: no cover - GUI feedback helper
+        for line in lines:
+            self.write(line)
+
+    def _emit(self, text: str) -> None:
+        formatted = text.rstrip()
+        if not formatted:
+            return
+        timestamp = time.strftime("%H:%M:%S")
+        self.target_queue.put(f"{timestamp} - {self.label} - {formatted}")
+
+    def close(self) -> None:  # pragma: no cover - GUI feedback helper
+        self.flush()
+
+
 class VisionGUI:
     def __init__(self, root: tk.Tk, initial_args: argparse.Namespace) -> None:
         self.root = root
@@ -174,9 +216,21 @@ class VisionGUI:
         self.python_log_handler.setFormatter(
             logging.Formatter("%(asctime)s - %(levelname)s - %(message)s", "%H:%M:%S")
         )
-        logging.getLogger().addHandler(self.python_log_handler)
-        logging.getLogger().setLevel(logging.INFO)
+        root_logger = logging.getLogger()
+        for handler in list(root_logger.handlers):
+            root_logger.removeHandler(handler)
+            handler.close()
+        root_logger.addHandler(self.python_log_handler)
+        root_logger.setLevel(logging.INFO)
+        logging.captureWarnings(True)
         self.logger = logging.getLogger(__name__)
+
+        self._original_stdout = sys.stdout
+        self._original_stderr = sys.stderr
+        self.stdout_redirector = QueueStreamRedirector(self.python_log_queue, "STDOUT")
+        self.stderr_redirector = QueueStreamRedirector(self.python_log_queue, "STDERR")
+        sys.stdout = self.stdout_redirector
+        sys.stderr = self.stderr_redirector
 
         self._build_layout()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -217,24 +271,6 @@ class VisionGUI:
         self.camera_combobox.bind("<<ComboboxSelected>>", lambda _event: self._on_camera_selected())
         rescan_btn = ttk.Button(control_frame, text="🔃", width=3, command=self._populate_camera_combobox)
         rescan_btn.grid(row=row, column=2, padx=4)
-
-        row += 1
-        ttk.Label(control_frame, text="Frame width").grid(row=row, column=0, sticky="w", pady=2)
-        self.frame_width_entry = ttk.Entry(
-            control_frame,
-            textvariable=self.arg_vars["frame_width"],
-            state="disabled",
-        )
-        self.frame_width_entry.grid(row=row, column=1, sticky="ew", pady=2)
-
-        row += 1
-        ttk.Label(control_frame, text="Frame height").grid(row=row, column=0, sticky="w", pady=2)
-        self.frame_height_entry = ttk.Entry(
-            control_frame,
-            textvariable=self.arg_vars["frame_height"],
-            state="disabled",
-        )
-        self.frame_height_entry.grid(row=row, column=1, sticky="ew", pady=2)
 
         row += 1
         ttk.Label(control_frame, text="Target FPS").grid(row=row, column=0, sticky="w", pady=2)
@@ -514,8 +550,6 @@ class VisionGUI:
             self.camera_combobox.configure(values=("No cameras detected",), state="disabled")
             self.camera_choice_var.set("No cameras detected")
             self.arg_vars["camera_index"].set("")
-            self.frame_width_entry.configure(state="disabled")
-            self.frame_height_entry.configure(state="disabled")
             return
 
         labels = [option["label"] for option in self.camera_options]
@@ -607,9 +641,6 @@ class VisionGUI:
             width = int(self.initial_args.frame_width)
         if height <= 0:
             height = int(self.initial_args.frame_height)
-
-        self.frame_width_entry.configure(state="normal")
-        self.frame_height_entry.configure(state="normal")
         self.arg_vars["frame_width"].set(str(int(width)))
         self.arg_vars["frame_height"].set(str(int(height)))
 
@@ -885,6 +916,14 @@ class VisionGUI:
         self.grbl_sender.close_connection()
 
     def _teardown_logging(self) -> None:
+        if hasattr(self, "stdout_redirector"):
+            self.stdout_redirector.close()
+        if hasattr(self, "stderr_redirector"):
+            self.stderr_redirector.close()
+        if hasattr(self, "_original_stdout"):
+            sys.stdout = self._original_stdout
+        if hasattr(self, "_original_stderr"):
+            sys.stderr = self._original_stderr
         try:
             logging.getLogger().removeHandler(self.python_log_handler)
         except ValueError:
