@@ -205,6 +205,7 @@ class VisionGUI:
 
         self.frame_queue: queue.Queue = queue.Queue(maxsize=2)
         self.photo_image: ImageTk.PhotoImage | None = None
+        self.video_canvas_image_id: int | None = None
         self.service: VisionService | None = None
         self.worker: threading.Thread | None = None
         self.stop_event: threading.Event | None = None
@@ -243,7 +244,7 @@ class VisionGUI:
         self.root.columnconfigure(1, weight=3)
         self.root.rowconfigure(0, weight=1)
 
-        control_frame = ttk.LabelFrame(self.root, text="Settings")
+        control_frame = ttk.LabelFrame(self.root, text="Camera and AI Settings")
         control_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
         control_frame.columnconfigure(1, weight=1)
 
@@ -473,8 +474,18 @@ class VisionGUI:
         preview_frame.rowconfigure(1, weight=2)
         preview_frame.columnconfigure(0, weight=1)
 
-        self.video_label = ttk.Label(preview_frame)
-        self.video_label.grid(row=0, column=0, sticky="nsew")
+        video_canvas_container = ttk.Frame(preview_frame)
+        video_canvas_container.grid(row=0, column=0, sticky="nsew")
+        video_canvas_container.columnconfigure(0, weight=1)
+        video_canvas_container.rowconfigure(0, weight=1)
+
+        self.video_canvas = tk.Canvas(
+            video_canvas_container,
+            highlightthickness=0,
+            borderwidth=0,
+        )
+        self.video_canvas.grid(row=0, column=0, sticky="nsew")
+        self.video_canvas.bind("<Configure>", lambda _event: self._center_video_image())
 
         python_log_frame = ttk.LabelFrame(preview_frame, text="Python Logs")
         python_log_frame.grid(row=1, column=0, sticky="nsew", padx=6, pady=(6, 6))
@@ -938,9 +949,52 @@ class VisionGUI:
         else:
             image = Image.fromarray(frame[:, :, ::-1])
             self.photo_image = ImageTk.PhotoImage(image=image)
-            self.video_label.configure(image=self.photo_image)
+            self._draw_video_frame()
         finally:
             self.root.after(30, self._schedule_preview_update)
+
+    def _draw_video_frame(self) -> None:
+        if not hasattr(self, "video_canvas"):
+            return
+        if self.photo_image is None:
+            return
+
+        canvas_width = self.video_canvas.winfo_width()
+        canvas_height = self.video_canvas.winfo_height()
+
+        if canvas_width <= 1 or canvas_height <= 1:
+            self.video_canvas.update_idletasks()
+            canvas_width = self.video_canvas.winfo_width()
+            canvas_height = self.video_canvas.winfo_height()
+
+        if self.video_canvas_image_id is None:
+            self.video_canvas_image_id = self.video_canvas.create_image(
+                canvas_width / 2,
+                canvas_height / 2,
+                image=self.photo_image,
+                anchor="center",
+            )
+        else:
+            self.video_canvas.itemconfig(self.video_canvas_image_id, image=self.photo_image)
+
+        self._center_video_image()
+
+    def _center_video_image(self) -> None:
+        if not hasattr(self, "video_canvas"):
+            return
+        if self.video_canvas_image_id is None:
+            return
+
+        canvas_width = self.video_canvas.winfo_width()
+        canvas_height = self.video_canvas.winfo_height()
+        if canvas_width <= 1 or canvas_height <= 1:
+            return
+
+        self.video_canvas.coords(
+            self.video_canvas_image_id,
+            canvas_width / 2,
+            canvas_height / 2,
+        )
 
     def _collect_args(self) -> argparse.Namespace:
         values: dict[str, object] = {}
