@@ -749,7 +749,7 @@ class VisionGUI:
         )
 
     def _refresh_serial_ports(self) -> None:
-        ports = GrblSender.list_serial_ports()
+        ports = self.grbl_sender.list_serial_ports()
         self._serial_ports_lookup = {}
         connected = self.grbl_sender.ser and self.grbl_sender.ser.is_open
         connected_label = None
