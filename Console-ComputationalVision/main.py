@@ -92,6 +92,16 @@ class FieldSpec:
     caster: Callable[[str], object]
 
 
+@dataclass
+class CommandRequest:
+    name: str
+    execute: Callable[[], list[str]]
+    refresh_position: bool = False
+    status_text: str | None = None
+    on_success: Callable[[], None] | None = None
+    on_error: Callable[[Exception | None], None] | None = None
+
+
 class TkQueueHandler(logging.Handler):
     def __init__(self, target_queue: queue.Queue[str]) -> None:
         super().__init__()
@@ -202,10 +212,12 @@ class VisionGUI:
         self.grbl_coordinate_vars: dict[str, tk.StringVar] = {
             axis: tk.StringVar(value="0") for axis in ("x", "y", "z")
         }
-        self._position_label_prefix = "Current position: "
-        self._disconnected_position_text = f"{self._position_label_prefix}—"
-        self.current_position_var = tk.StringVar(value=self._disconnected_position_text)
-        self._last_reported_position: tuple[float, float, float] | None = None
+        self.feedrate_var = tk.StringVar(value="200")
+        self.feedrate_error_var = tk.StringVar(value="")
+        self.command_status_var = tk.StringVar(value="")
+        self.current_position_axis_vars: dict[str, tk.StringVar] = {
+            axis: tk.StringVar(value="-") for axis in ("x", "y", "z")
+        }
 
         self.frame_queue: queue.Queue = queue.Queue(maxsize=2)
         self.photo_image: ImageTk.PhotoImage | None = None
@@ -238,13 +250,22 @@ class VisionGUI:
         sys.stdout = self.stdout_redirector
         sys.stderr = self.stderr_redirector
 
+        self._position_poll_stop = threading.Event()
+        self._position_poll_wakeup = threading.Event()
+        self._position_force_refresh = threading.Event()
+        self._position_poll_thread: threading.Thread | None = None
+        self._command_queue: queue.Queue = queue.Queue()
+        self._command_worker_stop = threading.Event()
+        self._command_worker_thread: threading.Thread | None = None
+        self._command_inflight = threading.Event()
+
         self._build_layout()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._schedule_preview_update()
         self._schedule_grbl_log_update()
         self._schedule_python_log_update()
+        self._start_background_workers()
         self._refresh_current_position_display(force=True)
-        self._schedule_position_poll()
 
     def _build_layout(self) -> None:
         self.root.columnconfigure(0, weight=1)
@@ -405,7 +426,7 @@ class VisionGUI:
         grbl_frame = ttk.LabelFrame(control_frame, text="G-code Sender")
         grbl_frame.grid(row=grbl_row, column=0, columnspan=3, sticky="nsew", pady=(10, 0))
         grbl_frame.columnconfigure(1, weight=1)
-        grbl_frame.rowconfigure(5, weight=1)
+        grbl_frame.rowconfigure(6, weight=1)
 
         ttk.Label(grbl_frame, text="Serial port").grid(row=0, column=0, sticky="w", pady=2, padx=4)
         self.serial_port_combo = ttk.Combobox(
@@ -431,55 +452,66 @@ class VisionGUI:
         )
         self.disconnect_serial_button.grid(row=0, column=1, sticky="ew")
 
-        coords_frame = ttk.Frame(grbl_frame)
-        coords_frame.grid(row=2, column=0, columnspan=3, sticky="ew", padx=4)
-        coords_frame.columnconfigure(0, weight=1)
-
-        coords_inputs = ttk.Frame(coords_frame)
-        coords_inputs.grid(row=0, column=0, sticky="w")
+        position_frame = ttk.Frame(grbl_frame)
+        position_frame.grid(row=2, column=0, columnspan=3, sticky="ew", padx=4, pady=(4, 2))
+        ttk.Label(position_frame, text="Current position").grid(row=0, column=0, sticky="w", padx=(0, 6))
         for idx, axis in enumerate(("x", "y", "z")):
-            ttk.Label(coords_inputs, text=f"{axis.upper()}:").grid(row=0, column=idx * 2, sticky="w", pady=(0, 4))
-            entry = ttk.Entry(coords_inputs, textvariable=self.grbl_coordinate_vars[axis], width=6)
-            entry.grid(row=0, column=idx * 2 + 1, sticky="w", padx=(0, 4), pady=(0, 4))
+            label_col = idx * 2 + 1
+            entry_col = label_col + 1
+            ttk.Label(position_frame, text=f"{axis.upper()}:").grid(row=0, column=label_col, sticky="w")
+            ttk.Entry(
+                position_frame,
+                textvariable=self.current_position_axis_vars[axis],
+                width=8,
+                justify="right",
+                state="readonly",
+            ).grid(row=0, column=entry_col, sticky="w", padx=(0, 6))
 
-        coords_actions = ttk.Frame(coords_frame)
-        coords_actions.grid(row=1, column=0, sticky="ew")
-        coords_actions.columnconfigure(0, weight=1)
+        move_row = ttk.Frame(grbl_frame)
+        move_row.grid(row=3, column=0, columnspan=3, sticky="ew", padx=4, pady=(0, 4))
+        for idx, axis in enumerate(("x", "y", "z")):
+            col = idx * 2
+            ttk.Label(move_row, text=f"{axis.upper()}:").grid(row=0, column=col, sticky="w")
+            ttk.Entry(move_row, textvariable=self.grbl_coordinate_vars[axis], width=6).grid(
+                row=0,
+                column=col + 1,
+                sticky="w",
+                padx=(0, 6),
+            )
 
-        self.current_position_label = ttk.Label(
-            coords_actions,
-            textvariable=self.current_position_var,
-            anchor="w",
-            justify="left",
-        )
-        self.current_position_label.grid(row=0, column=0, sticky="w", pady=(0, 4))
-        self.current_position_label.bind(
-            "<Configure>",
-            lambda event: self.current_position_label.configure(wraplength=event.width),
-        )
+        feedrate_col = 6
+        ttk.Label(move_row, text="Feedrate:").grid(row=0, column=feedrate_col, sticky="w")
+        self.feedrate_entry = ttk.Entry(move_row, textvariable=self.feedrate_var, width=7)
+        self.feedrate_entry.grid(row=0, column=feedrate_col + 1, sticky="w", padx=(0, 6))
+        self.feedrate_error_label = ttk.Label(move_row, textvariable=self.feedrate_error_var, foreground="red")
+        self.feedrate_error_label.grid(row=1, column=feedrate_col, columnspan=2, sticky="w", pady=(2, 0))
 
-        button_row = ttk.Frame(coords_actions)
-        button_row.grid(row=0, column=1, sticky="e", padx=(4, 0))
-        button_row.columnconfigure(0, weight=1)
-        button_row.columnconfigure(1, weight=1)
-
+        button_start_col = feedrate_col + 2
         self.send_coordinates_button = ttk.Button(
-            button_row,
+            move_row,
             text="Send",
             command=self._send_coordinate_move,
             state="disabled",
         )
-        self.send_coordinates_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        self.send_coordinates_button.grid(row=0, column=button_start_col, sticky="ew", padx=(6, 4))
+
         self.home_button = ttk.Button(
-            button_row,
+            move_row,
             text="Home",
             command=self._home_grbl,
             state="disabled",
         )
-        self.home_button.grid(row=0, column=1, sticky="ew")
+        self.home_button.grid(row=0, column=button_start_col + 1, sticky="ew")
+
+        move_row.columnconfigure(button_start_col + 2, weight=1)
+        ttk.Label(move_row, textvariable=self.command_status_var, foreground="gray").grid(
+            row=0,
+            column=button_start_col + 2,
+            sticky="w",
+        )
 
         command_frame = ttk.Frame(grbl_frame)
-        command_frame.grid(row=3, column=0, columnspan=3, sticky="ew", padx=4)
+        command_frame.grid(row=4, column=0, columnspan=3, sticky="ew", padx=4)
         command_frame.columnconfigure(0, weight=1)
         command_entry = ttk.Entry(command_frame, textvariable=self.grbl_command_var)
         command_entry.grid(row=0, column=0, sticky="ew", pady=(0, 4))
@@ -491,9 +523,9 @@ class VisionGUI:
         )
         self.send_grbl_button.grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
-        ttk.Label(grbl_frame, text="G-code Logs").grid(row=4, column=0, columnspan=3, sticky="w", padx=4)
+        ttk.Label(grbl_frame, text="G-code Logs").grid(row=5, column=0, columnspan=3, sticky="w", padx=4)
         self.grbl_log_text = scrolledtext.ScrolledText(grbl_frame, height=8, state="disabled", wrap="word")
-        self.grbl_log_text.grid(row=5, column=0, columnspan=3, sticky="nsew", padx=4, pady=(0, 4))
+        self.grbl_log_text.grid(row=6, column=0, columnspan=3, sticky="nsew", padx=4, pady=(0, 4))
 
         self._refresh_model_paths(initial=True)
         self._populate_camera_combobox()
@@ -766,6 +798,8 @@ class VisionGUI:
         else:
             self.connect_serial_button.configure(state="normal")
 
+        self._update_command_button_state()
+
     def _connect_grbl(self) -> None:
         if not self._serial_ports_lookup:
             messagebox.showwarning("No serial ports", "No serial ports are available to connect.")
@@ -787,9 +821,7 @@ class VisionGUI:
         self.logger.info("Connected to %s", port)
         self.connect_serial_button.configure(state="disabled")
         self.disconnect_serial_button.configure(state="normal")
-        self.send_grbl_button.configure(state="normal")
-        self.send_coordinates_button.configure(state="normal")
-        self.home_button.configure(state="normal")
+        self._update_command_button_state()
         self._start_grbl_reader()
         self._refresh_serial_ports()
         self._refresh_current_position_display(force=True)
@@ -803,10 +835,8 @@ class VisionGUI:
             self._log_grbl(f"Disconnected from {port}")
             self.logger.info("Disconnected from %s", port)
         self.disconnect_serial_button.configure(state="disabled")
-        self.send_grbl_button.configure(state="disabled")
-        self.send_coordinates_button.configure(state="disabled")
-        self.home_button.configure(state="disabled")
         self.connect_serial_button.configure(state="normal")
+        self._update_command_button_state()
         self._refresh_serial_ports()
         self._refresh_current_position_display(force=True)
 
@@ -819,6 +849,10 @@ class VisionGUI:
             messagebox.showerror("Serial not connected", "Connect to a serial port before sending commands.")
             return
 
+        if self._command_inflight.is_set():
+            messagebox.showwarning("Command in progress", "Wait for the current command to finish before sending another.")
+            return
+
         self._log_grbl(f">> {command}")
         self.logger.info("Sent command: %s", command)
         try:
@@ -828,6 +862,22 @@ class VisionGUI:
             return
 
         self.grbl_command_var.set("")
+
+    def _validate_feedrate(self) -> float | None:
+        raw = self.feedrate_var.get().strip()
+        if not raw:
+            raw = "200"
+            self.feedrate_var.set(raw)
+        try:
+            value = float(raw)
+        except ValueError:
+            self.feedrate_error_var.set("Enter a valid number")
+            return None
+        if value <= 0 or value > 10000:
+            self.feedrate_error_var.set("Must be between 0 and 10000")
+            return None
+        self.feedrate_error_var.set("")
+        return value
 
     def _send_coordinate_move(self) -> None:
         if not (self.grbl_sender.ser and self.grbl_sender.ser.is_open):
@@ -846,38 +896,58 @@ class VisionGUI:
                 messagebox.showerror("Invalid coordinate", f"Enter a numeric value for {axis.upper()}.")
                 return
 
+        feedrate = self._validate_feedrate()
+        if feedrate is None:
+            return
+
         self._log_grbl(
-            f">> Move X:{coords['x']:.3f} Y:{coords['y']:.3f} Z:{coords['z']:.3f}"
+            f">> Move X:{coords['x']:.3f} Y:{coords['y']:.3f} Z:{coords['z']:.3f} F:{feedrate:.1f}"
         )
         self.logger.info(
-            "Move command issued X:%.3f Y:%.3f Z:%.3f",
+            "Move command issued X:%.3f Y:%.3f Z:%.3f at feedrate %.1f",
             coords["x"],
             coords["y"],
             coords["z"],
+            feedrate,
         )
-        try:
-            self.grbl_sender.send_coordinates(coords["x"], coords["y"], coords["z"])
-        except Exception as exc:  # pragma: no cover - feedback for GUI users
-            messagebox.showerror("Failed to send move", str(exc))
-            return
-        self._refresh_current_position_display(force=True)
+        request = CommandRequest(
+            name="Move",
+            execute=lambda x=coords["x"], y=coords["y"], z=coords["z"], f=feedrate: self.grbl_sender.send_coordinates(
+                x,
+                y,
+                z,
+                feedrate=f,
+                timeout_s=4.0,
+            ),
+            refresh_position=True,
+            status_text="Moving…",
+        )
+        self._dispatch_command(request)
 
     def _home_grbl(self) -> None:
         if not (self.grbl_sender.ser and self.grbl_sender.ser.is_open):
             messagebox.showerror("Serial not connected", "Connect to a serial port before homing.")
             return
 
-        self._log_grbl(">> Home")
-        self.logger.info("Home command issued")
-        try:
-            self.grbl_sender.center_core()
-        except Exception as exc:  # pragma: no cover - feedback for GUI users
-            messagebox.showerror("Failed to home", str(exc))
+        feedrate = self._validate_feedrate()
+        if feedrate is None:
             return
 
-        for axis in ("x", "y", "z"):
-            self.grbl_coordinate_vars[axis].set("0")
-        self._refresh_current_position_display(force=True)
+        self._log_grbl(f">> Home F:{feedrate:.1f}")
+        self.logger.info("Home command issued at feedrate %.1f", feedrate)
+
+        def _on_success() -> None:
+            for axis in ("x", "y", "z"):
+                self.grbl_coordinate_vars[axis].set("0")
+
+        request = CommandRequest(
+            name="Home",
+            execute=lambda f=feedrate: self.grbl_sender.center_core(feedrate=f, timeout_s=4.0),
+            refresh_position=True,
+            status_text="Homing…",
+            on_success=_on_success,
+        )
+        self._dispatch_command(request)
 
     def _log_grbl(self, message: str) -> None:
         timestamp = time.strftime("%H:%M:%S")
@@ -901,56 +971,6 @@ class VisionGUI:
                 self.root.after(100, self._schedule_grbl_log_update)
             except tk.TclError:
                 return
-
-    def _format_position(self, values: tuple[float, float, float]) -> str:
-        axes = ("X", "Y", "Z")
-        parts: list[str] = []
-        for axis, raw in zip(axes, values):
-            if raw is None:
-                parts.append(f"{axis} N/A")
-                continue
-            value = float(raw)
-            if abs(value) < 0.0005:
-                value = 0.0
-            parts.append(f"{axis} {value:.3f} mm")
-        return f"{self._position_label_prefix}{' | '.join(parts)}"
-
-    def _refresh_current_position_display(self, *, force: bool = False) -> None:
-        if not hasattr(self, "current_position_var"):
-            return
-
-        connected = self.grbl_sender.ser and self.grbl_sender.ser.is_open
-        if not connected:
-            if force or self._last_reported_position is not None:
-                self.current_position_var.set(self._disconnected_position_text)
-                self._last_reported_position = None
-            return
-
-        try:
-            raw_position = self.grbl_sender.sum_traces()
-        except Exception:
-            if force:
-                self.current_position_var.set(self._disconnected_position_text)
-                self._last_reported_position = None
-            return
-
-        position = tuple(float(value) if value is not None else 0.0 for value in raw_position)
-        if (
-            not force
-            and self._last_reported_position is not None
-            and all(abs(prev - curr) < 1e-4 for prev, curr in zip(self._last_reported_position, position))
-        ):
-            return
-
-        self._last_reported_position = position
-        self.current_position_var.set(self._format_position(position))
-
-    def _schedule_position_poll(self) -> None:
-        self._refresh_current_position_display()
-        try:
-            self.root.after(250, self._schedule_position_poll)
-        except tk.TclError:
-            return
 
     def _append_python_log(self, message: str) -> None:
         if not hasattr(self, "python_log_text"):
@@ -991,6 +1011,186 @@ class VisionGUI:
                 self.root.after(200, self._schedule_python_log_update)
             except tk.TclError:
                 return
+
+    def _start_background_workers(self) -> None:
+        if self._position_poll_thread is None or not self._position_poll_thread.is_alive():
+            self._position_poll_stop.clear()
+            self._position_poll_thread = threading.Thread(
+                target=self._position_poll_loop,
+                name="PositionPoll",
+                daemon=True,
+            )
+            self._position_poll_thread.start()
+
+        if self._command_worker_thread is None or not self._command_worker_thread.is_alive():
+            self._command_worker_stop.clear()
+            self._command_worker_thread = threading.Thread(
+                target=self._command_worker_loop,
+                name="CommandWorker",
+                daemon=True,
+            )
+            self._command_worker_thread.start()
+
+    def _stop_background_workers(self) -> None:
+        self._position_poll_stop.set()
+        self._position_poll_wakeup.set()
+        self._command_worker_stop.set()
+        if self._command_worker_thread and self._command_worker_thread.is_alive():
+            self._command_queue.put(None)
+
+    def _position_poll_loop(self) -> None:
+        next_run = time.monotonic()
+        last_values: tuple[str, str, str] | None = None
+        last_connected: bool | None = None
+        while not self._position_poll_stop.is_set():
+            now = time.monotonic()
+            remaining = next_run - now
+            if remaining > 0:
+                triggered = self._position_poll_wakeup.wait(remaining)
+                if triggered:
+                    self._position_poll_wakeup.clear()
+                    next_run = time.monotonic()
+                    continue
+            if self._position_poll_stop.is_set():
+                break
+
+            start = time.monotonic()
+            connected = bool(self.grbl_sender.ser and self.grbl_sender.ser.is_open)
+            interval = 0.1 if connected else 1.0
+            display_values: tuple[str, str, str] = ("-", "-", "-")
+            raw_values: tuple[float, float, float] | None = None
+            if connected:
+                try:
+                    raw_values = self.grbl_sender.sum_traces()
+                except Exception:
+                    raw_values = None
+                if raw_values and any(abs(value) > 1e-6 for value in raw_values):
+                    display_values = tuple(f"{float(value):.3f}" for value in raw_values)
+
+            force = self._position_force_refresh.is_set()
+            if force:
+                self._position_force_refresh.clear()
+
+            if force or display_values != last_values or connected != last_connected:
+                last_values = display_values
+                last_connected = connected
+                try:
+                    self.root.after(
+                        0,
+                        lambda vals=display_values, conn=connected: self._update_current_position_ui(vals, conn),
+                    )
+                except tk.TclError:
+                    break
+
+            next_run = start + interval
+            current = time.monotonic()
+            if next_run < current:
+                next_run = current
+
+        self._position_poll_wakeup.clear()
+        self._position_poll_thread = None
+
+    def _update_current_position_ui(self, values: tuple[str, str, str], connected: bool) -> None:
+        if not hasattr(self, "current_position_axis_vars"):
+            return
+        for axis, value in zip(("x", "y", "z"), values):
+            var = self.current_position_axis_vars.get(axis)
+            if var is None:
+                continue
+            if var.get() != value:
+                var.set(value)
+        self._update_command_button_state()
+
+    def _refresh_current_position_display(self, *, force: bool = False) -> None:
+        if force:
+            self._position_force_refresh.set()
+        self._position_poll_wakeup.set()
+
+    def _command_worker_loop(self) -> None:
+        while not self._command_worker_stop.is_set():
+            try:
+                request: CommandRequest | None = self._command_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if request is None:
+                self._command_queue.task_done()
+                break
+
+            start = time.monotonic()
+            success = True
+            responses: list[str] = []
+            error: Exception | None = None
+            try:
+                responses = request.execute() or []
+            except Exception as exc:  # pragma: no cover - hardware interactions
+                success = False
+                error = exc
+
+            duration = time.monotonic() - start
+            if success:
+                for line in responses:
+                    self._log_grbl(f"<< {line}")
+            else:
+                message = f"{request.name} failed: {error}"
+                self._log_grbl(message)
+                self.logger.error(message)
+                if isinstance(error, TimeoutError):
+                    self.logger.error("%s timed out after %.2f s", request.name, duration)
+
+            try:
+                self.root.after(
+                    0,
+                    lambda req=request, ok=success, err=error: self._on_command_complete(req, ok, err),
+                )
+            except tk.TclError:
+                break
+            finally:
+                self._command_queue.task_done()
+
+        self._command_worker_thread = None
+
+    def _on_command_complete(self, request: CommandRequest, success: bool, error: Exception | None) -> None:
+        self._command_inflight.clear()
+        if success:
+            if request.on_success:
+                request.on_success()
+            self.command_status_var.set("")
+        else:
+            if request.on_error:
+                request.on_error(error)
+            error_text = f"{request.name} error"
+            if isinstance(error, TimeoutError):
+                error_text = f"{request.name} timeout"
+            self.command_status_var.set(error_text)
+            try:
+                messagebox.showerror(error_text, str(error) if error else error_text)
+            except tk.TclError:
+                pass
+
+        self._update_command_button_state()
+        if request.refresh_position or not success:
+            self._position_force_refresh.set()
+            self._position_poll_wakeup.set()
+
+    def _update_command_button_state(self) -> None:
+        if not hasattr(self, "send_coordinates_button"):
+            return
+        connected = bool(self.grbl_sender.ser and self.grbl_sender.ser.is_open)
+        busy = self._command_inflight.is_set()
+        state = "normal" if connected and not busy else "disabled"
+        self.send_coordinates_button.configure(state=state)
+        self.home_button.configure(state=state)
+        general_state = "normal" if connected and not busy else "disabled"
+        self.send_grbl_button.configure(state=general_state)
+
+    def _dispatch_command(self, request: CommandRequest) -> None:
+        if self._command_inflight.is_set():
+            return
+        self._command_inflight.set()
+        status_text = request.status_text or f"{request.name}…"
+        self.command_status_var.set(status_text)
+        self._update_command_button_state()
+        self._command_queue.put(request)
 
     def _start_grbl_reader(self) -> None:
         if self.grbl_reader_thread and self.grbl_reader_thread.is_alive():
@@ -1033,6 +1233,7 @@ class VisionGUI:
         self.grbl_sender.close_connection()
         self.grbl_sender.clear_trace()
         self._refresh_current_position_display(force=True)
+        self._update_command_button_state()
 
     def _teardown_logging(self) -> None:
         if hasattr(self, "stdout_redirector"):
@@ -1232,6 +1433,7 @@ class VisionGUI:
 
     def _on_close(self) -> None:
         self._teardown_grbl()
+        self._stop_background_workers()
         self._teardown_logging()
         if self.running:
             self.stop_stream()
@@ -1240,7 +1442,8 @@ class VisionGUI:
             self.root.destroy()
 
     def _wait_for_thread_and_close(self) -> None:
-        if self.worker and self.worker.is_alive():
+        threads = [self.worker, self._command_worker_thread, self._position_poll_thread]
+        if any(thread and thread.is_alive() for thread in threads):
             self.root.after(100, self._wait_for_thread_and_close)
             return
         self.root.destroy()

@@ -1,9 +1,9 @@
 import logging
+import time
 from typing import List, Optional
 
-from serial.tools import list_ports
-import time
 import serial
+from serial.tools import list_ports
 
 
 logger = logging.getLogger(__name__)
@@ -60,7 +60,15 @@ class GrblSender:
         self.ser = None
         self.port = None
 
-    def send_coordinates(self, x: float, y: float, z: float = 0, feedrate: float = 200):
+    def send_coordinates(
+        self,
+        x: float,
+        y: float,
+        z: float = 0,
+        *,
+        feedrate: float = 200,
+        timeout_s: float = 4.0,
+    ) -> List[str]:
         if not self.ser or not self.ser.is_open:
             raise RuntimeError("Port not open. Call connect().")
         sum_x, sum_y, sum_z = self.sum_traces()
@@ -73,23 +81,41 @@ class GrblSender:
                 or sum_z + z > 4
                 or sum_z + z < -4):
             logger.warning("Movement exceeds range limit. Centering core instead.")
-            self.center_core()
-            return
-        commands: list = ["G21", "G91", f"F{feedrate}", f"G1 X{x:.3f} Y{y:.3f} Z{z:.3f}", "G90", "M2"]
+            self.center_core(feedrate=feedrate, timeout_s=timeout_s)
+            return []
+        commands: list[str] = [
+            "G21",
+            "G91",
+            f"F{feedrate}",
+            f"G1 X{x:.3f} Y{y:.3f} Z{z:.3f}",
+            "G90",
+            "M2",
+        ]
         logger.info("Sending coordinates X:%.3f Y:%.3f Z:%.3f", x, y, z)
+        responses: List[str] = []
         for command in commands:
-            self.send_command(command)
+            responses.extend(self.send_command(command, timeout_s=timeout_s))
         self.trace_coordinates(x, y, z)
+        return responses
 
 #region Helpers
-    def send_command(self, command: str, wait_for_ok: bool = True) -> List[str]:
+    def send_command(
+        self,
+        command: str,
+        wait_for_ok: bool = True,
+        *,
+        timeout_s: float = 5.0,
+    ) -> List[str]:
         if not self.ser or not self.ser.is_open:
             raise RuntimeError("Port not open. Call connect().")
         if not command.endswith("\n"):
             command += "\n"
         self.ser.write(command.encode("utf-8"))
         if wait_for_ok:
-            return self.read_until_ok()
+            responses = self.read_until_ok(timeout_s=timeout_s)
+            if not any(line == "ok" or line.startswith("error:") for line in responses):
+                raise TimeoutError(f"Timeout waiting for response to '{command.strip()}'")
+            return responses
         return []
 
     def trace_coordinates(self, x: float, y: float, z: float = None):
@@ -97,7 +123,7 @@ class GrblSender:
             "x": x,
             "y": y,
             "z": z,
-            "timestamp": time.time()
+            "timestamp": time.monotonic()
         })
 
     def clear_trace(self):
@@ -110,27 +136,34 @@ class GrblSender:
         sum_z = sum(c['z'] for c in sorted_coords if c['z'] is not None)
         return sum_x, sum_y, sum_z
 
-    def center_core(self):
+    def center_core(self, *, feedrate: float = 200, timeout_s: float = 4.0) -> List[str]:
         if not self.ser or not self.ser.is_open:
             raise RuntimeError("Port not open. Call connect().")
         # Reset coordinates to center (based on the trace)
         if not self.coordinates:
             logger.info("Core already centered.")
-            return
+            return []
         sum_x, sum_y, sum_z = self.sum_traces()
         reverse_x = -1 * sum_x
         reverse_y = -1 * sum_y
         reverse_z = -1 * sum_z
 
-        self.send_coordinates(reverse_x, reverse_y, reverse_z)
+        responses = self.send_coordinates(
+            reverse_x,
+            reverse_y,
+            reverse_z,
+            feedrate=feedrate,
+            timeout_s=timeout_s,
+        )
         self.clear_trace()
+        return responses
 
     def read_until_ok(self, timeout_s: float = 5.0) -> List[str]:
         if not self.ser or not self.ser.is_open:
             raise RuntimeError("Port not open. Call connect().")
         lines: List[str] = []
-        end = time.time() + timeout_s
-        while time.time() < end:
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
             raw = self.ser.readline()
             if not raw:
                 continue
