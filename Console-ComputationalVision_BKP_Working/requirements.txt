@@ -1,0 +1,11 @@
+pyserial
+cvzone
+roboflow
+ultralytics
+torch
+torchvision
+torchaudio
+opencv-python
+numpy
+tensorflow
+Pillow
