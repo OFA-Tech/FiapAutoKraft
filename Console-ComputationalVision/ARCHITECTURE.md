@@ -42,7 +42,7 @@ bindings:
 | Interface                     | Implementation                   |
 |-------------------------------|----------------------------------|
 | `CameraRepository`            | `OpenCvCameraRepository`         |
-| `DetectorFactory`             | `YoloDetectorFactory`            |
+| `DetectorFactory`             | `YoloDetectorFactory` (produces `YoloVxDetector` instances per session) |
 | `GcodeSender`                 | `SerialGcodeSender`              |
 | `ModelStore`                  | Filesystem-backed model store    |
 | `EventBus`                    | Simple thread-safe publish/subscribe bus |
@@ -50,6 +50,9 @@ bindings:
 The DI container is deliberately lightweight: the `build_app` function constructs concrete
 instances, injects them into the appropriate use cases and then passes those to the
 `GuiApp`. All injection happens via constructors, and there are no module-level singletons.
+Detectors are never bound directly; instead the `DetectorFactory` creates a fresh
+`YoloVxDetector` for each detection run so alternate implementations only require a new
+factory binding.
 
 ### Lifecycles
 
@@ -66,7 +69,26 @@ in `infrastructure/` and updating the binding in `build_app`.
 ## Testing Strategy
 
 - Unit tests live under `tests/unit/` and target domain entities, the event bus, command
-  dispatcher, position poller and detection controller using fake adapters.
+  dispatcher, position poller, shared helper modules (`shared/ui_controls.py`,
+  `shared/logging_utils.py`, `shared/scheduling.py`, `shared/paths.py`, `shared/validation.py`)
+  and the detection controller using fake adapters.
 - `tests/integration/test_system_smoke.py` provides a smoke test that wires the entire stack
   with fakes to ensure detection events and G-code commands flow end-to-end without touching
-  real hardware.
+  real hardware. `tests/integration/test_detector_factory.py` exercises the detector factory
+  wiring to ensure a detector can be created and invoked without a concrete camera feed.
+
+## Shared helpers
+
+The `shared/` package hosts cross-cutting utilities that remove duplication between the GUI
+widgets and background services:
+
+- `ui_controls.py` centralises combobox population, widget enable/disable toggling and other
+  small Tkinter helpers.
+- `logging_utils.py` funnels log lines into text widgets while enforcing the 150-line FIFO
+  requirement for both Python and G-code logs.
+- `scheduling.py` provides the `IntervalScheduler` used by the position poller to implement
+  the skip-tick policy when the sender is busy or disconnected.
+- `validation.py` contains reusable numeric parsers so presentation code surfaces consistent
+  error messages.
+- `paths.py` encapsulates model discovery and path list normalisation for the filesystem
+  adapters.

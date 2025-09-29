@@ -25,6 +25,8 @@ from domain.events import DetectionProduced, DeviceStateChanged, ErrorRaised
 from infrastructure.config_loader import AppConfig
 from infrastructure.logging_sink import QueueStreamRedirector, TkQueueHandler
 from shared.bus import EventBus
+from shared.ui_controls import bind_combobox_selection, set_group_state, update_combobox_options
+from shared.validation import ValidationError, ensure_positive_float, parse_float, parse_int
 from .widgets.camera_preview import CameraPreview
 from .widgets.gcode_sender_panel import GcodeSenderPanel
 from .widgets.python_logs import PythonLogsWidget
@@ -147,7 +149,7 @@ class GuiApp:
         self.model_combo = ttk.Combobox(self.control_frame, textvariable=self.model_var, state="readonly")
         self.model_combo.grid(row=row, column=1, sticky="ew", pady=2)
         ttk.Button(self.control_frame, text="🔃", width=3, command=self._refresh_models).grid(row=row, column=2, padx=4)
-        self.model_combo.bind("<<ComboboxSelected>>", lambda _event: self._on_model_selected())
+        bind_combobox_selection(self.model_combo, self._on_model_selected)
 
         row += 1
         ttk.Label(self.control_frame, text="Camera").grid(row=row, column=0, sticky="w", pady=2)
@@ -155,7 +157,7 @@ class GuiApp:
         self.camera_combo = ttk.Combobox(self.control_frame, textvariable=self.camera_var, state="readonly")
         self.camera_combo.grid(row=row, column=1, sticky="ew", pady=2)
         ttk.Button(self.control_frame, text="🔃", width=3, command=self._refresh_cameras).grid(row=row, column=2, padx=4)
-        self.camera_combo.bind("<<ComboboxSelected>>", lambda _event: self._on_camera_selected())
+        bind_combobox_selection(self.camera_combo, self._on_camera_selected)
 
         row += 1
         ttk.Label(self.control_frame, text="Target FPS").grid(row=row, column=0, sticky="w", pady=2)
@@ -250,13 +252,19 @@ class GuiApp:
 
     def _refresh_models(self, initial: bool = False) -> None:
         models = self._list_models.execute(ensure=self.model_var.get())
-        self.model_combo.configure(values=models)
-        if initial and models:
-            self.model_combo.set(models[0])
-            self.model_var.set(models[0])
+        update_combobox_options(
+            self.model_combo,
+            self.model_var,
+            models,
+            placeholder="No models detected",
+            preserve_selection=not initial,
+        )
+        if not models:
+            self.labels_listbox.delete(0, tk.END)
+            return
         self._load_labels()
 
-    def _on_model_selected(self) -> None:
+    def _on_model_selected(self, _selection: str | None = None) -> None:
         self._load_labels()
 
     def _load_labels(self) -> None:
@@ -274,10 +282,6 @@ class GuiApp:
 
     def _refresh_cameras(self) -> None:
         cameras = self._list_cameras.execute()
-        if not cameras:
-            self.camera_combo.configure(values=("No cameras detected",), state="disabled")
-            self.camera_var.set("No cameras detected")
-            return
         labels = []
         self._camera_lookup = {}
         selected_label = None
@@ -289,13 +293,14 @@ class GuiApp:
             self._camera_lookup[label] = camera
             if camera.index == self._config.initial_settings.camera_index:
                 selected_label = label
-        self.camera_combo.configure(values=labels, state="readonly")
         if selected_label:
-            self.camera_combo.set(selected_label)
             self.camera_var.set(selected_label)
-        else:
-            self.camera_combo.set(labels[0])
-            self.camera_var.set(labels[0])
+        update_combobox_options(
+            self.camera_combo,
+            self.camera_var,
+            labels,
+            placeholder="No cameras detected",
+        )
 
     def _on_camera_selected(self) -> None:
         label = self.camera_var.get()
@@ -326,27 +331,27 @@ class GuiApp:
             messagebox.showerror("Invalid settings", str(exc))
             return
         self._start_detection.execute()
-        self.start_button.configure(state="disabled")
-        self.stop_button.configure(state="normal")
+        set_group_state((self.start_button,), enabled=False)
+        set_group_state((self.stop_button,), enabled=True)
         self._detection_running = True
 
     def stop_detection(self) -> None:
         self._stop_detection.execute()
-        self.start_button.configure(state="normal")
-        self.stop_button.configure(state="disabled")
+        set_group_state((self.start_button,), enabled=True)
+        set_group_state((self.stop_button,), enabled=False)
         self._detection_running = False
         self.status_var.set("Idle")
 
     def _build_settings_request(self) -> UpdateSettingsRequest | None:
         try:
-            camera_index = int((self.camera_var.get().split(":", 1)[0]).strip())
-            frame_width = int(self.frame_width_var.get())
-            frame_height = int(self.frame_height_var.get())
-            target_fps = float(self.target_fps_var.get())
-            inference_interval = int(self.inference_var.get())
-            confidence = float(self.confidence_var.get())
-            zoom = float(self.zoom_var.get())
-        except ValueError:
+            camera_index = parse_int((self.camera_var.get().split(":", 1)[0]).strip(), "Camera index")
+            frame_width = parse_int(self.frame_width_var.get(), "Frame width", minimum=1)
+            frame_height = parse_int(self.frame_height_var.get(), "Frame height", minimum=1)
+            target_fps = parse_float(self.target_fps_var.get(), "Target FPS", minimum=0.0)
+            inference_interval = parse_int(self.inference_var.get(), "Inference interval", minimum=1)
+            confidence = parse_float(self.confidence_var.get(), "Confidence threshold", minimum=0.0)
+            zoom = ensure_positive_float(self.zoom_var.get(), "Digital zoom")
+        except ValidationError:
             messagebox.showerror("Invalid settings", "Ensure numeric fields contain valid numbers")
             return None
         selected_indices = self.labels_listbox.curselection()
@@ -371,7 +376,7 @@ class GuiApp:
         try:
             while True:
                 message = self._python_log_queue.get_nowait()
-                self.python_logs.append(message)
+        self.python_logs.append(message)
         except queue.Empty:
             pass
         finally:
@@ -398,12 +403,12 @@ class GuiApp:
                 description = getattr(event, "description", str(event))
                 if "started" in description.lower():
                     self._detection_running = True
-                    self.start_button.configure(state="disabled")
-                    self.stop_button.configure(state="normal")
+                    set_group_state((self.start_button,), enabled=False)
+                    set_group_state((self.stop_button,), enabled=True)
                 if "stopped" in description.lower():
                     self._detection_running = False
-                    self.start_button.configure(state="normal")
-                    self.stop_button.configure(state="disabled")
+                    set_group_state((self.start_button,), enabled=True)
+                    set_group_state((self.stop_button,), enabled=False)
                     self.status_var.set("Idle")
         except queue.Empty:
             pass

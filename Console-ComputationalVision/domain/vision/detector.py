@@ -14,15 +14,6 @@ class Detector(ABC):
     def labels(self) -> Sequence[str]:
         raise NotImplementedError
 
-
-class DetectorFactory(Protocol):
-    def create(
-        self,
-        model_path: str,
-        device: str | None = None,
-    ) -> Detector:
-        ...
-
     @abstractmethod
     def infer(
         self,
@@ -30,4 +21,15 @@ class DetectorFactory(Protocol):
         selected_labels: Iterable[str] | None = None,
         confidence_threshold: float = 0.5,
     ) -> InferenceResult:
-        raise NotImplementedError
+        """Run inference for the supplied frame and return the result."""
+
+
+class DetectorFactory(Protocol):
+    """Factory responsible for constructing detector instances."""
+
+    def create(
+        self,
+        model_path: str,
+        device: str | None = None,
+    ) -> Detector:
+        ...

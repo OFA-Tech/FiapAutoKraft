@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from ultralytics import YOLO
 
+from shared.paths import ensure_path_first, list_files_with_extensions
+
 
 def _normalise_label_names(names) -> list[str]:
     if isinstance(names, dict):
@@ -20,18 +22,12 @@ class ModelStore:
         self._models_dir = models_dir
 
     def list_models(self) -> list[str]:
-        if not self._models_dir.exists():
-            return []
-        paths: list[str] = []
-        for file_path in sorted(self._models_dir.rglob("*.pt")):
-            paths.append(file_path.as_posix())
-        return paths
+        files = list_files_with_extensions(self._models_dir, (".pt",))
+        return [path.as_posix() for path in files]
 
     def ensure_present(self, path: str) -> list[str]:
         models = self.list_models()
-        if path and path not in models:
-            models = [path] + models
-        return models
+        return ensure_path_first(models, path)
 
     def load_labels(self, model_path: str) -> list[str]:
         model = YOLO(model_path)

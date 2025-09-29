@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Sequence
 
 from domain.settings.settings import VisionSettings
+from shared.paths import resolve_project_root
 
 
 @dataclass(frozen=True)
@@ -17,7 +18,7 @@ class AppConfig:
 
 class ArgConfigLoader:
     def __init__(self, project_root: Path | None = None) -> None:
-        self._project_root = project_root or Path(__file__).resolve().parents[2]
+        self._project_root = project_root or resolve_project_root(Path(__file__))
 
     def parse(self, argv: Sequence[str] | None = None) -> AppConfig:
         parser = argparse.ArgumentParser(description="Console Computational Vision")

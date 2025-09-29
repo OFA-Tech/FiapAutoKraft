@@ -9,6 +9,9 @@ from application.send_coordinates import COMMAND_STATUS_TOPIC, GCODE_LOG_TOPIC, 
 from application.send_raw_command import SendRawCommandUseCase
 from domain.motion.position import Feedrate, Position
 from shared.bus import EventBus
+from shared.logging_utils import append_with_limit
+from shared.ui_controls import set_group_state, update_combobox_options
+from shared.validation import ValidationError, ensure_positive_float, parse_float
 
 GCODE_INSTRUMENT_TOPIC = "gcode.instrument"
 POSITION_TOPIC = "gcode.position"
@@ -117,12 +120,13 @@ class GcodeSenderPanel:
             label = f"{port['device']} ({description})"
             labels.append(label)
             self._ports_lookup[label] = port
-        if not labels:
-            labels = ["No ports available"]
-            self.serial_combo.configure(values=labels, state="disabled")
-        else:
-            self.serial_combo.configure(values=labels, state="readonly")
-            self.serial_combo.set(labels[0])
+        update_combobox_options(
+            self.serial_combo,
+            self.serial_port_var,
+            labels,
+            placeholder="No ports available",
+            preserve_selection=False,
+        )
 
     def _connect(self) -> None:
         label = self.serial_port_var.get()
@@ -147,28 +151,27 @@ class GcodeSenderPanel:
 
     def _send_move(self) -> None:
         try:
-            coords = {axis: float(self.coord_vars[axis].get() or "0") for axis in ("x", "y", "z")}
-        except ValueError:
+            coords = {
+                axis: parse_float(self.coord_vars[axis].get() or "0", axis.upper())
+                for axis in ("x", "y", "z")
+            }
+        except ValidationError:
             messagebox.showerror("Invalid coordinates", "Enter numeric values for X, Y, Z")
             return
         try:
-            feedrate = float(self.feedrate_var.get() or "200")
-        except ValueError:
-            messagebox.showerror("Invalid feedrate", "Enter a numeric feedrate")
-            return
-        if feedrate <= 0:
-            messagebox.showerror("Invalid feedrate", "Feedrate must be positive")
+            feedrate = ensure_positive_float(self.feedrate_var.get() or "200", "Feedrate")
+        except ValidationError as exc:
+            message = "Feedrate must be positive" if "positive" in str(exc).lower() else "Enter a numeric feedrate"
+            messagebox.showerror("Invalid feedrate", message)
             return
         self._send_coordinates.execute(Position(**coords), Feedrate(feedrate))
 
     def _home(self) -> None:
         try:
-            feedrate = float(self.feedrate_var.get() or "200")
-        except ValueError:
-            messagebox.showerror("Invalid feedrate", "Enter a numeric feedrate")
-            return
-        if feedrate <= 0:
-            messagebox.showerror("Invalid feedrate", "Feedrate must be positive")
+            feedrate = ensure_positive_float(self.feedrate_var.get() or "200", "Feedrate")
+        except ValidationError as exc:
+            message = "Feedrate must be positive" if "positive" in str(exc).lower() else "Enter a numeric feedrate"
+            messagebox.showerror("Invalid feedrate", message)
             return
         self._home_machine.execute(Feedrate(feedrate))
 
@@ -182,10 +185,7 @@ class GcodeSenderPanel:
     def _on_log(self, message) -> None:
         if not isinstance(message, str):
             message = str(message)
-        self.log_text.configure(state="normal")
-        self.log_text.insert(tk.END, message + "\n")
-        self.log_text.see(tk.END)
-        self.log_text.configure(state="disabled")
+        append_with_limit(self.log_text, message, 150)
 
     def append_log(self, message: str) -> None:
         self._on_log(message)
@@ -224,8 +224,10 @@ class GcodeSenderPanel:
         connected = self._connection.is_connected()
         busy = self._busy or self._dispatcher.busy()
         state = "normal" if connected and not busy else "disabled"
-        self.move_button.configure(state=state)
-        self.home_button.configure(state=state)
-        self.command_button.configure(state=state)
-        self.connect_button.configure(state="disabled" if connected else "normal")
-        self.disconnect_button.configure(state="normal" if connected else "disabled")
+        set_group_state((self.move_button, self.home_button, self.command_button), enabled=state == "normal")
+        if connected:
+            set_group_state((self.connect_button,), enabled=False)
+            set_group_state((self.disconnect_button,), enabled=True)
+        else:
+            set_group_state((self.connect_button,), enabled=True)
+            set_group_state((self.disconnect_button,), enabled=False)
