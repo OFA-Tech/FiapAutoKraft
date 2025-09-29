@@ -38,3 +38,33 @@ Integração de sistemas: Python, C++, Docker, MQTT, REST APIs
   linha de comando para configurar o modelo YOLOv12, escolher a câmera, ajustar
   resolução e aplicar *digital zoom* (por exemplo `--digital-zoom 0.7` para
   "afastar" a visualização mantendo a inferência na imagem original).
+
+### ▶️ Como executar o Console-ComputationalVision
+
+1. Crie e ative um ambiente virtual (opcional, mas recomendado):
+   ```bash
+   python -m venv .venv
+   .venv\Scripts\activate  # Windows
+   source .venv/bin/activate  # macOS/Linux
+   ```
+2. Instale as dependências do módulo:
+   ```bash
+   pip install -r Console-ComputationalVision/requirements.txt
+   ```
+3. Garanta que o diretório `Console-ComputationalVision/models` contenha o
+   modelo YOLO a ser utilizado (por padrão, `models/best.pt`).
+4. No terminal, defina o diretório de trabalho como `Console-ComputationalVision`
+   e execute o aplicativo principal:
+   ```bash
+   cd Console-ComputationalVision
+   python main.py
+   ```
+   O script `main.py` instancia a GUI Tkinter definida em
+   `presentation/gui_app.py` e aceita argumentos de linha de comando como
+   `--model-path`, `--camera-index` e `--frame-width` para ajustar a execução de
+   acordo com o hardware disponível. Consulte `infrastructure/config_loader.py`
+   para ver a lista completa de opções.
+
+Se ocorrer um erro de importação relacionado ao OpenCV (por exemplo,
+`ImportError: libGL.so.1`), instale as bibliotecas de sistema necessárias para o
+OpenCV na sua plataforma ou utilize a distribuição `opencv-python-headless`.

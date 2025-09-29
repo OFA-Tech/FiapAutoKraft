@@ -18,7 +18,11 @@ class AppConfig:
 
 class ArgConfigLoader:
     def __init__(self, project_root: Path | None = None) -> None:
-        self._project_root = project_root or resolve_project_root(Path(__file__))
+        detected_root = resolve_project_root(Path(__file__))
+        console_root = detected_root / "Console-ComputationalVision"
+        if console_root.exists():
+            detected_root = console_root
+        self._project_root = project_root or detected_root
 
     def parse(self, argv: Sequence[str] | None = None) -> AppConfig:
         parser = argparse.ArgumentParser(description="Console Computational Vision")
@@ -34,8 +38,12 @@ class ArgConfigLoader:
         parser.add_argument("--window-name", default="YOLOv12 Detection")
         args = parser.parse_args(argv)
 
+        model_path = Path(args.model_path)
+        if not model_path.is_absolute():
+            model_path = (self._project_root / model_path).resolve()
+
         settings = VisionSettings(
-            model_path=str(args.model_path),
+            model_path=str(model_path),
             camera_index=int(args.camera_index),
             frame_width=int(args.frame_width),
             frame_height=int(args.frame_height),
