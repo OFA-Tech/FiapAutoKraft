@@ -376,7 +376,7 @@ class GuiApp:
         try:
             while True:
                 message = self._python_log_queue.get_nowait()
-        self.python_logs.append(message)
+                self.python_logs.append(message)
         except queue.Empty:
             pass
         finally:
