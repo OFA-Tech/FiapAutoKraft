@@ -1,0 +1,13 @@
+train: C:\Dev\OFA-Tech\FiapAutoKraft\Console-ComputationalVision\datasets\Challenge2025-SPI_moday_29_09\train
+val: C:\Dev\OFA-Tech\FiapAutoKraft\Console-ComputationalVision\datasets\Challenge2025-SPI_moday_29_09\valid
+test: C:\Dev\OFA-Tech\FiapAutoKraft\Console-ComputationalVision\datasets\Challenge2025-SPI_moday_29_09\test
+
+nc: 6
+names: ['agua', 'butter', 'coco', 'coke', 'soap', 'tomate']
+
+roboflow:
+  workspace: caitos-personal
+  project: challenge2025-spi-ee60h
+  version: 3
+  license: MIT
+  url: https://universe.roboflow.com/caitos-personal/challenge2025-spi-ee60h/dataset/3
