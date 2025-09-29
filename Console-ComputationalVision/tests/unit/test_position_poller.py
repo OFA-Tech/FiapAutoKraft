@@ -3,12 +3,12 @@ from __future__ import annotations
 import logging
 import time
 
-from ...application.poll_current_position import POSITION_TOPIC, PollCurrentPositionUseCase, PositionPoller
-from ...application.send_coordinates import CommandDispatcher
-from ...domain.events import PositionUpdated
-from ...domain.motion.gcode_sender import CommandAck, GcodeSender
-from ...domain.motion.position import Feedrate, Position
-from ...shared.bus import EventBus
+from application.poll_current_position import POSITION_TOPIC, PollCurrentPositionUseCase, PositionPoller
+from application.send_coordinates import CommandDispatcher
+from domain.events import PositionUpdated
+from domain.motion.gcode_sender import CommandAck, GcodeSender
+from domain.motion.position import Feedrate, Position
+from shared.bus import EventBus
 
 
 class FakeAck:

@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence
 
-from ..domain.motion.position import Position
-from ..domain.vision.model import BoundingBox
+from domain.motion.position import Position
+from domain.vision.model import BoundingBox
 
 
 @dataclass(frozen=True)

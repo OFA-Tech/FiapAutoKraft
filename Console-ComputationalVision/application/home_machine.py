@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from ..domain.motion.gcode_sender import GcodeSender
-from ..domain.motion.position import Feedrate
+from domain.motion.gcode_sender import GcodeSender
+from domain.motion.position import Feedrate
 
 from .send_coordinates import CommandDispatcher, CommandRequest
 

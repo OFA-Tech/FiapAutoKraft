@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 
-from ..domain.settings.settings import VisionSettings
+from domain.settings.settings import VisionSettings
 
 
 @dataclass

@@ -3,12 +3,12 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, ttk
 
-from ...application.gcode_connection import GcodeConnectionService
-from ...application.poll_current_position import PollCurrentPositionUseCase
-from ...application.send_coordinates import COMMAND_STATUS_TOPIC, GCODE_LOG_TOPIC, CommandDispatcher
-from ...application.send_raw_command import SendRawCommandUseCase
-from ...domain.motion.position import Feedrate, Position
-from ...shared.bus import EventBus
+from application.gcode_connection import GcodeConnectionService
+from application.poll_current_position import PollCurrentPositionUseCase
+from application.send_coordinates import COMMAND_STATUS_TOPIC, GCODE_LOG_TOPIC, CommandDispatcher
+from application.send_raw_command import SendRawCommandUseCase
+from domain.motion.position import Feedrate, Position
+from shared.bus import EventBus
 
 GCODE_INSTRUMENT_TOPIC = "gcode.instrument"
 POSITION_TOPIC = "gcode.position"

@@ -5,15 +5,15 @@ import time
 
 import numpy as np
 
-from ...application.start_detection import DetectionController, StartDetectionUseCase, StopDetectionUseCase
-from ...application.update_settings import VisionSettingsStore
-from ...domain.camera.camera import Camera, Frame, Resolution
-from ...domain.camera.camera_repository import CameraRepository
-from ...domain.events import DetectionProduced
-from ...domain.settings.settings import VisionSettings
-from ...domain.vision.detector import Detector
-from ...domain.vision.model import BoundingBox, InferenceResult
-from ...shared.bus import EventBus
+from application.start_detection import DetectionController, StartDetectionUseCase, StopDetectionUseCase
+from application.update_settings import VisionSettingsStore
+from domain.camera.camera import Camera, Frame, Resolution
+from domain.camera.camera_repository import CameraRepository
+from domain.events import DetectionProduced
+from domain.settings.settings import VisionSettings
+from domain.vision.detector import Detector
+from domain.vision.model import BoundingBox, InferenceResult
+from shared.bus import EventBus
 
 
 class FakeDetectorFactory:

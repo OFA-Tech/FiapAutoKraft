@@ -8,8 +8,8 @@ from dataclasses import dataclass
 import serial
 from serial.tools import list_ports
 
-from ..domain.motion.gcode_sender import CommandAck, GcodeSender
-from ..domain.motion.position import Feedrate, Position
+from domain.motion.gcode_sender import CommandAck, GcodeSender
+from domain.motion.position import Feedrate, Position
 
 
 logger = logging.getLogger(__name__)

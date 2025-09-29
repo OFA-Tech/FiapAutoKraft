@@ -3,10 +3,10 @@ from __future__ import annotations
 import logging
 import time
 
-from ...application.send_coordinates import CommandDispatcher, CommandRequest
-from ...domain.motion.gcode_sender import CommandAck, GcodeSender
-from ...domain.motion.position import Feedrate, Position
-from ...shared.bus import EventBus
+from application.send_coordinates import CommandDispatcher, CommandRequest
+from domain.motion.gcode_sender import CommandAck, GcodeSender
+from domain.motion.position import Feedrate, Position
+from shared.bus import EventBus
 
 
 class FakeAck:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from ...domain.settings.settings import VisionSettings
+from domain.settings.settings import VisionSettings
 
 
 def test_vision_settings_validation() -> None:

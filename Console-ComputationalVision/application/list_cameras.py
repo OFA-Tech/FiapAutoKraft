@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..domain.camera.camera_repository import CameraRepository
+from domain.camera.camera_repository import CameraRepository
 
 
 class ListCamerasUseCase:

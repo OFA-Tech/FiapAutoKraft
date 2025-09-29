@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..infrastructure.model_store import ModelStore
+from infrastructure.model_store import ModelStore
 
 
 class ListModelsUseCase:

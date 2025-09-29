@@ -5,10 +5,10 @@ import threading
 from dataclasses import dataclass
 from typing import Callable
 
-from ..domain.events import ErrorRaised
-from ..domain.motion.gcode_sender import GcodeSender
-from ..domain.motion.position import Feedrate, Position
-from ..shared.bus import EventBus
+from domain.events import ErrorRaised
+from domain.motion.gcode_sender import GcodeSender
+from domain.motion.position import Feedrate, Position
+from shared.bus import EventBus
 
 COMMAND_STATUS_TOPIC = "gcode.command.status"
 COMMAND_RESULT_TOPIC = "gcode.command.result"

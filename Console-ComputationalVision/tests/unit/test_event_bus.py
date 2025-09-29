@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ...shared.bus import EventBus
+from shared.bus import EventBus
 
 
 def test_event_bus_publish_and_unsubscribe() -> None:

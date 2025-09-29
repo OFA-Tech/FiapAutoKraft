@@ -4,13 +4,13 @@ import threading
 import time
 from dataclasses import dataclass
 
-from ..domain.camera.camera import Frame, Resolution
-from ..domain.camera.camera_repository import CameraRepository
-from ..domain.events import DetectionProduced, DeviceStateChanged, ErrorRaised
-from ..domain.settings.settings import VisionSettings
-from ..domain.vision.detector import Detector, DetectorFactory
-from ..shared.bus import EventBus
-from ..shared.utils import apply_digital_zoom
+from domain.camera.camera import Frame, Resolution
+from domain.camera.camera_repository import CameraRepository
+from domain.events import DetectionProduced, DeviceStateChanged, ErrorRaised
+from domain.settings.settings import VisionSettings
+from domain.vision.detector import Detector, DetectorFactory
+from shared.bus import EventBus
+from shared.utils import apply_digital_zoom
 
 
 DETECTION_TOPIC = "vision.detection"

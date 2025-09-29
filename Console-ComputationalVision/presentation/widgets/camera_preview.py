@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from PIL import Image, ImageTk
 
-from ...domain.camera.camera import Frame
+from domain.camera.camera import Frame
 
 
 @dataclass

@@ -3,9 +3,9 @@ from __future__ import annotations
 import threading
 import time
 
-from ..domain.events import ErrorRaised, PositionUpdated
-from ..domain.motion.gcode_sender import GcodeSender
-from ..shared.bus import EventBus
+from domain.events import ErrorRaised, PositionUpdated
+from domain.motion.gcode_sender import GcodeSender
+from shared.bus import EventBus
 from .send_coordinates import CommandDispatcher
 
 POSITION_TOPIC = "gcode.position"

@@ -36,7 +36,7 @@
 
 ## Dependency Injection
 
-`console_computational_vision.main` acts as the composition root. It wires the following
+`main.py` acts as the composition root. It wires the following
 bindings:
 
 | Interface                     | Implementation                   |

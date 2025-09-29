@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
-from ..domain.settings.settings import VisionSettings
+from domain.settings.settings import VisionSettings
 
 
 @dataclass(frozen=True)

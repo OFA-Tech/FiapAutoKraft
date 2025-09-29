@@ -6,25 +6,25 @@ import sys
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from ..application.gcode_connection import GcodeConnectionService
-from ..application.home_machine import HomeMachineUseCase
-from ..application.list_cameras import ListCamerasUseCase
-from ..application.list_models import ListModelsUseCase, LoadModelLabelsUseCase
-from ..application.poll_current_position import PollCurrentPositionUseCase
-from ..application.send_coordinates import CommandDispatcher
-from ..application.send_raw_command import SendRawCommandUseCase
-from ..application.start_detection import (
+from application.gcode_connection import GcodeConnectionService
+from application.home_machine import HomeMachineUseCase
+from application.list_cameras import ListCamerasUseCase
+from application.list_models import ListModelsUseCase, LoadModelLabelsUseCase
+from application.poll_current_position import PollCurrentPositionUseCase
+from application.send_coordinates import CommandDispatcher
+from application.send_raw_command import SendRawCommandUseCase
+from application.start_detection import (
     DETECTION_TOPIC,
     DEVICE_TOPIC,
     ERROR_TOPIC,
     StartDetectionUseCase,
     StopDetectionUseCase,
 )
-from ..application.update_settings import UpdateSettingsRequest, UpdateSettingsUseCase, VisionSettingsStore
-from ..domain.events import DetectionProduced, DeviceStateChanged, ErrorRaised
-from ..infrastructure.config_loader import AppConfig
-from ..infrastructure.logging_sink import QueueStreamRedirector, TkQueueHandler
-from ..shared.bus import EventBus
+from application.update_settings import UpdateSettingsRequest, UpdateSettingsUseCase, VisionSettingsStore
+from domain.events import DetectionProduced, DeviceStateChanged, ErrorRaised
+from infrastructure.config_loader import AppConfig
+from infrastructure.logging_sink import QueueStreamRedirector, TkQueueHandler
+from shared.bus import EventBus
 from .widgets.camera_preview import CameraPreview
 from .widgets.gcode_sender_panel import GcodeSenderPanel
 from .widgets.python_logs import PythonLogsWidget

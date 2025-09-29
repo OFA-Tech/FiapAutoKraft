@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..domain.motion.gcode_sender import GcodeSender
+from domain.motion.gcode_sender import GcodeSender
 from .poll_current_position import PollCurrentPositionUseCase
 
 

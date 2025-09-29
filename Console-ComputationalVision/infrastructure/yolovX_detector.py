@@ -9,10 +9,10 @@ import numpy as np
 import torch
 from ultralytics import YOLO
 
-from ..domain.camera.camera import Frame
-from ..domain.vision.detector import Detector, DetectorFactory
-from ..domain.vision.model import BoundingBox, InferenceResult
-from ..shared.errors import InfrastructureError
+from domain.camera.camera import Frame
+from domain.vision.detector import Detector, DetectorFactory
+from domain.vision.model import BoundingBox, InferenceResult
+from shared.errors import InfrastructureError
 
 
 def _normalise_label_names(names) -> list[str]:

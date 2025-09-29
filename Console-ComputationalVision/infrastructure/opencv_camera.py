@@ -5,9 +5,9 @@ from pathlib import Path
 
 import cv2
 
-from ..domain.camera.camera import Camera, Frame, Resolution
-from ..domain.camera.camera_repository import CameraRepository
-from ..shared.errors import InfrastructureError
+from domain.camera.camera import Camera, Frame, Resolution
+from domain.camera.camera_repository import CameraRepository
+from shared.errors import InfrastructureError
 
 
 class OpenCvCameraStream:
