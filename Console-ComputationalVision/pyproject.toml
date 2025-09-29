@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "console-computationalvision"
+version = "0.1.0"
+description = "Console application scaffold for a computational vision pipeline"
+requires-python = ">=3.13"
+dependencies = []
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-ra"
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.mypy]
+python_version = "3.13"
+warn_unused_configs = true
+warn_return_any = true
+strict = true
+mypy_path = "."
