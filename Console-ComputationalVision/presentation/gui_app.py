@@ -459,6 +459,10 @@ class GuiApp:
             pass
         self._dispatcher.stop()
         self._poller.stop()
+        try:
+            self.gcode_panel.shutdown()
+        except Exception:
+            pass
         sys.stdout = self._original_stdout
         sys.stderr = self._original_stderr
         self.root.quit()
