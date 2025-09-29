@@ -43,9 +43,9 @@ class VisionInferenceUseCase:
             selected_labels=request.selected_labels,
         )
         self._logger.info(
-            "inference.completed",
-            total=len(batch.detections),
-            labels=[d.label for d in batch.detections],
+            "inference.completed total=%s labels=%s",
+            len(batch.detections),
+            [d.label for d in batch.detections],
         )
         self._detection_repository.store(batch)
         detections = batch.detections

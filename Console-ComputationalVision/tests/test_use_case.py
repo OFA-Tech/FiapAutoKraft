@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import structlog
+import logging
 
 from data.repositories import InMemoryDetectionProvider, InMemoryDetectionRepository
 from domain.entities import BoundingBox, Detection
-from services.use_cases import (
-    VisionInferenceRequest,
-    VisionInferenceUseCase,
-)
+from services.use_cases import VisionInferenceRequest, VisionInferenceUseCase
 
 
 def test_use_case_persists_and_limits_results() -> None:
@@ -19,7 +16,7 @@ def test_use_case_persists_and_limits_results() -> None:
     ]
     provider = InMemoryDetectionProvider(detections=detections)
     repository = InMemoryDetectionRepository()
-    logger = structlog.get_logger("test")
+    logger = logging.getLogger("test")
     use_case = VisionInferenceUseCase(provider, repository, logger)
 
     request = VisionInferenceRequest(selected_labels=["part", "tool"], limit=1)
@@ -28,4 +25,4 @@ def test_use_case_persists_and_limits_results() -> None:
     assert response.total == 2
     assert len(response.detections) == 1
     stored = list(repository.list_detections())
-    assert stored == detections
+    assert list(stored) == detections

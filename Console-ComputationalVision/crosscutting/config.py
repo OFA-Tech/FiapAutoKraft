@@ -1,26 +1,40 @@
-"""Configuration objects and factories for the application."""
+"""Application configuration loading helpers."""
 
 from __future__ import annotations
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+import os
+from dataclasses import dataclass
 
 
-class AppSettings(BaseSettings):
-    """Application configuration loaded from environment variables or .env files."""
-
-    model_path: str = Field(default="models/best.pt", description="Path to the YOLO model file.")
-    camera_index: int = Field(default=0, description="Index of the camera device to open.")
-    frame_width: int = Field(default=1280, description="Width of captured frames in pixels.")
-    frame_height: int = Field(default=720, description="Height of captured frames in pixels.")
-    target_fps: float = Field(default=30.0, description="Target capture FPS hint for the camera driver.")
-    inference_interval: int = Field(default=3, description="Number of frames to skip between inferences.")
-    confidence_threshold: float = Field(default=0.60, description="Minimum confidence to accept a detection.")
-    digital_zoom: float = Field(default=1.0, description="Digital zoom factor applied to previews.")
-    device: str | None = Field(default=None, description="Explicit inference device, e.g. 'cpu' or 'cuda'.")
-    log_level: str = Field(default="INFO", description="Global logging level.")
-
-    model_config = SettingsConfigDict(env_file=".env", env_prefix="CCV_", extra="ignore")
+def _env(key: str, default: str) -> str:
+    return os.getenv(f"CCV_{key}", default)
 
 
-__all__ = ["AppSettings"]
+@dataclass(slots=True)
+class AppSettings:
+    """Container for runtime configuration values.
+
+    Values are read lazily from environment variables with the ``CCV_`` prefix
+    so the application remains 12-factor friendly without requiring third-party
+    settings libraries.
+    """
+
+    model_path: str = _env("MODEL_PATH", "models/best.pt")
+    camera_index: int = int(_env("CAMERA_INDEX", "0"))
+    frame_width: int = int(_env("FRAME_WIDTH", "1280"))
+    frame_height: int = int(_env("FRAME_HEIGHT", "720"))
+    target_fps: float = float(_env("TARGET_FPS", "30"))
+    inference_interval: int = int(_env("INFERENCE_INTERVAL", "3"))
+    confidence_threshold: float = float(_env("CONFIDENCE_THRESHOLD", "0.60"))
+    digital_zoom: float = float(_env("DIGITAL_ZOOM", "1.0"))
+    device: str | None = os.getenv("CCV_DEVICE")
+    log_level: str = _env("LOG_LEVEL", "INFO")
+
+
+def load_settings() -> AppSettings:
+    """Load configuration values from the current environment."""
+
+    return AppSettings()
+
+
+__all__ = ["AppSettings", "load_settings"]

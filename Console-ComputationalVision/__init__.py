@@ -1,1 +1,0 @@
-"""Console-ComputationalVision package root."""

@@ -6,12 +6,12 @@ from app.container import ApplicationContainer
 from services.use_cases import VisionInferenceRequest
 
 
-def test_container_resolves_use_case() -> None:
+def test_container_scope_resolves_use_case() -> None:
     container = ApplicationContainer()
-    container.logging()
+    container.ensure_configured()
 
-    with container.enter_scope("run"):
-        use_case = container.vision_inference_use_case()
+    with container.enter_scope("run") as scope:
+        use_case = scope.vision_inference_use_case()
         response = use_case.execute(VisionInferenceRequest())
 
     assert response.total >= 0

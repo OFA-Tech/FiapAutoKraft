@@ -1,41 +1,25 @@
-"""Logging configuration helpers using structlog."""
+"""Logging utilities using Python's standard logging module."""
 
 from __future__ import annotations
 
 import logging
-from typing import Any
-
-import structlog
+from logging import Logger
 
 
 def setup_logging(level: str = "INFO") -> None:
-    """Initialise structlog and the standard logging bridge."""
+    """Configure the root logger with a sensible default format."""
 
     logging.basicConfig(
-        level=level,
-        format="%(message)s",
-    )
-    structlog.configure(
-        processors=[
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.processors.add_log_level,
-            structlog.processors.StackInfoRenderer(),
-            structlog.processors.format_exc_info,
-            structlog.dev.ConsoleRenderer(),
-        ],
-        wrapper_class=structlog.stdlib.BoundLogger,
-        logger_factory=structlog.stdlib.LoggerFactory(),
-        cache_logger_on_first_use=True,
+        level=getattr(logging, level.upper(), logging.INFO),
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+        datefmt="%H:%M:%S",
     )
 
 
-def get_logger(name: str, **kwargs: Any) -> structlog.stdlib.BoundLogger:
-    """Return a configured structlog logger bound to ``name``."""
+def get_logger(name: str) -> Logger:
+    """Return a module-level logger."""
 
-    logger = structlog.get_logger(name)
-    if kwargs:
-        logger = logger.bind(**kwargs)
-    return logger
+    return logging.getLogger(name)
 
 
 __all__ = ["setup_logging", "get_logger"]

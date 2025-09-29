@@ -1,7 +1,11 @@
-dependency-injector>=4.41.0
-pydantic>=2.6.0
-pydantic-settings>=2.1.0
-structlog>=24.1.0
 pytest>=8.1.0
 ruff>=0.1.14
 mypy>=1.8.0
+Pillow>=10.2.0
+
+# Vision stack (optional, required for YOLO backend)
+ultralytics>=8.1.0
+opencv-python>=4.9.0.80
+cvzone>=1.6.1
+numpy>=1.26.0
+torch>=2.1.0

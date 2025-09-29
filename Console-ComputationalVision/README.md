@@ -1,16 +1,16 @@
 # Console-ComputationalVision
 
-A modular, dependency-injected scaffold for building console and GUI tooling around a computational vision pipeline. The project is organised into clear layers to support future expansion of the original prototype contained in `Console-ComputationalVision_BKP_Working`.
+A modular, dependency-injected scaffold for building console and GUI tooling around a computational vision pipeline. The project keeps the layering from the legacy prototype while adding a Tkinter operator console that launches by default.
 
 ## Project Layout
 
 ```
 Console-ComputationalVision/
-  app/              # CLI/GUI entry points and dependency injection composition
+  app/              # CLI/GUI entry points and dependency container
   services/         # Application use cases orchestrating domain + data layers
   domain/           # Pure domain models and business logic
   data/             # Infrastructure adapters and repositories
-  crosscutting/     # Logging, configuration, exceptions, shared utilities
+  crosscutting/     # Logging, configuration, shared utilities
   tests/            # Pytest-based test suite
 ```
 
@@ -24,13 +24,21 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### Run the sample CLI
+### Launch the GUI
 
 ```bash
-python -m app.main --labels part --limit 1
+python -m app.main
 ```
 
-The CLI bootstraps the dependency injection container, creates an execution scope, and invokes the vision inference use case. By default the container wires an in-memory detection provider so the command returns deterministic sample output.
+The GUI starts with the in-memory detection provider so that the interface can be exercised without a camera. Use the **Start** button to run repeated inference cycles and watch the detections table update.
+
+### Run in CLI mode
+
+```bash
+python -m app.main --cli --labels part tool --limit 1
+```
+
+CLI mode is useful for headless environments or quick smoke tests. Add `--use-yolo` to switch to the real YOLO-backed provider once the optional dependencies are installed.
 
 ### Run tests
 
@@ -41,28 +49,28 @@ pytest
 ## Architecture Diagram (ASCII)
 
 ```
-+-------------------+        +-------------------+        +-------------------+
-|  app.main CLI     | -----> |  services/use_cases | ----> |  domain/entities  |
-|                   |        |  (VisionInference) |        |  (Detection DTOs) |
-+-------------------+        +-------------------+        +-------------------+
-          |                             |                             |
-          |                             v                             |
-          |                    +-------------------+                  |
-          |                    | data/repositories | <----------------+
-          |                    | (providers, repos)|
-          |                             |
-          v                             v
-+-------------------+        +-------------------+
-| crosscutting/config|        | crosscutting/log  |
-| (pydantic settings)|        | (structlog setup) |
-+-------------------+        +-------------------+
++---------------------+        +---------------------+        +-------------------+
+|  app/ (CLI + GUI)   | -----> | services/use_cases  | -----> |  domain/entities  |
+|  container + Tk     |        |  (VisionInference)  |        |  (Detection DTOs) |
++---------------------+        +---------------------+        +-------------------+
+          |                               |
+          |                               v
+          |                      +---------------------+
+          |                      | data/repositories   |
+          |                      | (providers, repos)  |
+          |                               |
+          v                               v
++---------------------+        +---------------------+
+| crosscutting/config |        | crosscutting/logging|
+| (env-based settings)|        | (stdlib logging)    |
++---------------------+        +---------------------+
 ```
 
 ## Extending with Real Vision Capabilities
 
-* Implement `YoloDetectionProvider` in `data/repositories.py` by porting the remaining inference logic from the backup repository. The structure already mirrors the previous `VisionService` responsibilities.
-* Replace the default in-memory provider binding in `app/container.py` with the YOLO-backed implementation for real camera input.
-* Expand `app/gui/` with widgets or a Tkinter front-end mirroring the original GUI.
+* Wire the YOLO backend by calling `container.use_yolo_backend()` in `app/main.py` or by passing `--use-yolo` on the CLI.
+* Port any remaining functionality from the legacy `VisionService` into `YoloDetectionProvider` if additional features are required.
+* Expand `app/gui/` with camera previews and GRBL controls from the original Tkinter application.
 
 ## Tooling
 
