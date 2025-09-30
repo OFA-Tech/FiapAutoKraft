@@ -191,7 +191,8 @@ class GrblSender:
         lines: List[str] = []
         saw_first_byte = False
         deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
+        #while time.monotonic() < deadline:
+        while True:
             raw = self.ser.readline()
             if not raw:
                 continue
