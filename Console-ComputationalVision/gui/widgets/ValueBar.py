@@ -33,7 +33,7 @@ class ValueBar(tk.Frame):
         default_value = max(min_value, min(max_value, default_value))
 
         # --- default design
-        self.pack(padx=10, pady=10, fill="x")
+        self.pack(padx=5, pady=5, fill="x")
 
         # Left label
         self._label = ttk.Label(self, text=label_text)

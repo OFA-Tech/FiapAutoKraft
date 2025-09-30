@@ -4,7 +4,7 @@ from tkinter import font
 
 class ValueBox(tk.Frame):
     def __init__(self, master, title: str, value: str | float,
-                 border_color: str = "#4a90e2", width=150, height=80, **kwargs):
+                 border_color: str = "#4a90e2", width=100, height=60, **kwargs):
         """
         A card-like box with title + value and a colored border.
 

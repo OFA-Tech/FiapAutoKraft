@@ -34,7 +34,7 @@ class TextInput(tk.Frame):
         self._suppress_change = False
 
         # --- layout ---
-        self.pack(padx=10, pady=10, fill="x")
+        self.pack(padx=5, pady=5, fill="x")
 
         # Label
         self._label = ttk.Label(self, text=label_text)

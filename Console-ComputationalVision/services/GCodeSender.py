@@ -164,9 +164,9 @@ if __name__ == "__main__":
             gcode.baud_rate = 115200
             if gcode.connect_nano():
                 try:
-                    await gcode.send_coordinates(3, 2, 4)
+                    await gcode.send_coordinates(3, 2, 2)
                     await gcode.center_core()
-                    await gcode.send_coordinates(-3, -2, 4)
+                    await gcode.send_coordinates(-3, -2, 1)
                     await gcode.center_core()
                 finally:
                     gcode.close_connection()

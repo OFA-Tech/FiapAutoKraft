@@ -65,7 +65,7 @@ class InfoButton(tk.Button):
 
     def _design(self):
         # simple default layout like your other widgets
-        self.pack(padx=10, pady=10)
+        self.pack(padx=5, pady=5)
 
     def _handle_click(self):
         # Open modal and block until closed (modal manages its own grab/wait)

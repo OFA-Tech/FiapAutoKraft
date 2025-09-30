@@ -17,7 +17,7 @@ class DropdownInput(tk.Frame):
 
         # Left label
         self._label = ttk.Label(self, text=label_text)
-        self._label.pack(side="left", padx=(0, 8))
+        self._label.pack(side="left", padx=(0, 5))
 
         # Combobox
         self._var = tk.StringVar()

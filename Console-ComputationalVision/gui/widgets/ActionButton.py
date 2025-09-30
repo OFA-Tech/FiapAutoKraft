@@ -22,7 +22,7 @@ class ActionButton(tk.Button):
 
     # default layout like your other widgets
     def _design(self):
-        self.pack(padx=10, pady=10)
+        self.pack(padx=5, pady=5)
 
     def _safe_enable(self):
         try:
