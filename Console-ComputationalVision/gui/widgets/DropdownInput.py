@@ -3,10 +3,20 @@ from tkinter import ttk
 import asyncio, threading, inspect, traceback
 
 from gui.widgets.InfoButton import InfoButton
+from gui.widgets.RefreshButton import RefreshButton  # <-- add this import
 
 
 class DropdownInput(tk.Frame):
-    def __init__(self, master, items=None, label_text="", on_change=None, info_text: str | None = None, **combo_kwargs):
+    def __init__(
+        self,
+        master,
+        items=None,
+        label_text="",
+        on_change=None,
+        info_text: str | None = None,
+        refresh_function=None,                 # <-- NEW
+        **combo_kwargs
+    ):
         super().__init__(master)
         self._on_change = on_change
         self._values_to_names = {}
@@ -26,11 +36,19 @@ class DropdownInput(tk.Frame):
         self._combo.pack(side="left", fill="x", expand=True)
         self._combo.bind("<<ComboboxSelected>>", self._on_selected)
 
-        # Optional info button on the RIGHT
+        # Right-side buttons (optional)
+        # Refresh first (far right), then Info; or swap if you prefer
+        if callable(refresh_function):
+            self._refresh_btn = RefreshButton(self, on_refresh=refresh_function, text="🔃")
+            # override its auto-pack to align tight on the right
+            self._refresh_btn.pack_configure(side="right", padx=(6, 0))
+        else:
+            self._refresh_btn = None
+
         if isinstance(info_text, str) and info_text.strip():
             title = f"{label_text} Explanation" if label_text else "Explanation"
             self._info_btn = InfoButton(self, title=title, message=info_text.strip())
-            self._info_btn.pack(side="right", padx=(8, 0))
+            self._info_btn.pack(side="right", padx=(6, 0))
         else:
             self._info_btn = None
 
@@ -54,13 +72,11 @@ class DropdownInput(tk.Frame):
         self._names_to_values.clear()
 
         if not items:
-            # show dummy entry and disable
             self._combo["values"] = ["(no values available)"]
             self._var.set("(no values available)")
             self._combo.state(["disabled"])
             return
 
-        # build mappings and populate
         display_names = []
         for val, name in items:
             self._values_to_names[val] = name
@@ -68,7 +84,7 @@ class DropdownInput(tk.Frame):
             display_names.append(name)
 
         self._combo["values"] = display_names
-        self._var.set(display_names[0])  # default to first item
+        self._var.set(display_names[0])
         self._combo.state(["!disabled", "readonly"])
         self._fire_on_change(self.get_value())
 
@@ -94,28 +110,3 @@ class DropdownInput(tk.Frame):
             try: asyncio.run(coro)
             except Exception: traceback.print_exc()
         threading.Thread(target=worker, daemon=True).start()
-
-# Demo
-if __name__ == "__main__":
-    async def on_change_async(val):
-        await asyncio.sleep(0.5)
-        print("changed to:", val)
-
-    root = tk.Tk()
-    opts = [("pt", "Português"), ("en", "English"), ("es", "Español")]
-
-    dd1 = DropdownInput(
-        root, opts, label_text="Language:", on_change=on_change_async, width=18,
-        info_text="Choose the UI language. This affects labels and messages only."
-    )
-
-    dd2 = DropdownInput(
-        root, [], label_text="Empty:", on_change=on_change_async, width=18,
-        info_text="No options available. Plug a device or load data to enable."
-    )
-
-    dd3 = DropdownInput(
-        root, [], label_text="Empty:", on_change=on_change_async, width=18
-    )
-
-    root.mainloop()

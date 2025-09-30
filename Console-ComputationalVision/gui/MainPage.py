@@ -16,6 +16,7 @@ from gui.widgets.ValueBox import ValueBox
 class MainPage(tk.Frame):
     def __init__(self, master):
         super().__init__(master)
+        self.py_log = None
         self.pack(fill="both", expand=True)
         self._build_ui()
 
@@ -59,7 +60,8 @@ class MainPage(tk.Frame):
             cam_ai, camera_opts, label_text="Camera",
             on_change=self._on_camera_changed,
             info_text="Select a directshow camera device",
-            width=36
+            width=36,
+            refresh_function=self._refresh_cameras
         )
         self._tight_pack(self.dd_camera)
 
@@ -227,6 +229,15 @@ class MainPage(tk.Frame):
     # ----------------------------------------------------- Callbacks (stubs)
     def _on_model_submit(self, value):
         self.py_log.append_log(f"Model set: {value}")
+
+    async def _refresh_cameras(self):
+        # Dummy implementation; replace with actual camera detection logic
+        camera_opts = [("0", "0: Camera 0 - MSMF (640x480)"),
+                       ("1", "1: Camera 1 - MSMF (640x480)")]
+        self.dd_camera.set_items(camera_opts)
+        self.py_log.append_log("Camera list refreshed")
+
+
 
     def _on_camera_changed(self, cam_value):
         try:
