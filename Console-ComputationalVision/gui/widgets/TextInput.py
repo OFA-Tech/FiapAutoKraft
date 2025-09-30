@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import ttk
 import asyncio, threading, inspect, traceback
 
-from widgets.InfoButton import InfoButton
+from gui.widgets.InfoButton import InfoButton
 
 
 class TextInput(tk.Frame):

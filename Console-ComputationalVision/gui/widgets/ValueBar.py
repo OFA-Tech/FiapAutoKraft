@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import ttk
 import asyncio, threading, inspect, traceback
 
-from widgets.InfoButton import InfoButton  # reusing your existing one
+from gui.widgets.InfoButton import InfoButton  # reusing your existing one
 
 
 class ValueBar(tk.Frame):
