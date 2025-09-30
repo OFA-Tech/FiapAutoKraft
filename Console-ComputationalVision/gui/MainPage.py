@@ -21,6 +21,7 @@ from gui.widgets.ValueBox import ValueBox
 from services.GCodeSender import GCodeSender
 from services.Utils import Utils
 from services.vision_service import VisionService
+from services.integration_service import VisionToGCodeIntegrator
 
 
 class MainPage(tk.Frame):
@@ -38,6 +39,12 @@ class MainPage(tk.Frame):
         self.vision_service: VisionService | None = None
         self._vision_thread: threading.Thread | None = None
         self._vision_stop_event: threading.Event | None = None
+        self.integration_service = VisionToGCodeIntegrator(
+            self.gcode_sender,
+            run_async=self._run_gcode_async,
+            log_python=self._log_python,
+            log_gcode=self._log_gcode,
+        )
 
         # Runtime state ------------------------------------------------------
         self._camera_capture: cv2.VideoCapture | None = None
@@ -447,6 +454,7 @@ class MainPage(tk.Frame):
         self.preview.stop()
         self.preview.set_capture(None)
 
+        self.integration_service.reset()
         self._vision_stop_event = threading.Event()
         self._vision_thread = threading.Thread(
             target=self._run_vision_service,
@@ -593,6 +601,7 @@ class MainPage(tk.Frame):
             self.vision_service.run(
                 frame_callback=self._on_vision_frame,
                 stop_event=stop_event,
+                detection_callback=self._on_vision_detections,
             )
         except Exception as exc:
             self._log_python(f"Vision service stopped with error: {exc}")
@@ -601,6 +610,7 @@ class MainPage(tk.Frame):
             self.after(0, self._set_state, "Idle")
             self.after(0, setattr, self, "vision_service", None)
             self.after(0, self._restore_preview_after_service)
+            self.integration_service.reset()
             self._vision_thread = None
             self._vision_stop_event = None
 
@@ -614,9 +624,16 @@ class MainPage(tk.Frame):
         self._vision_thread = None
         self._vision_stop_event = None
         self.vision_service = None
+        self.integration_service.reset()
 
     def _on_vision_frame(self, frame):
         self.preview.display_frame(frame)
+
+    def _on_vision_detections(self, detections: list[dict], frame_size: tuple[int, int]) -> None:
+        try:
+            self.integration_service.handle_detections(detections, frame_size)
+        except Exception as exc:
+            self._log_python(f"Integration error: {exc}")
 
     def _restore_preview_after_service(self) -> None:
         if self._selected_camera is None:
