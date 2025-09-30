@@ -112,12 +112,19 @@ class MainPage(tk.Frame):
         self.state_var = "Idle"
         row = ttk.Frame(cam_ai)
         row.pack(fill="x", padx=6, pady=4)
-        btn_start = ActionButton(row, text="Start", on_action=self._on_start_clicked)
-        btn_start.pack_configure(side="left", padx=6,expand=True)  # override the auto-pack
         state_info = ValueBox(row, title= "State:", value=self.state_var)
         state_info.pack_configure(side="left", padx=6, expand=True)
+        current_x = ValueBox(row, title="Current X:", value=0)
+        current_x.pack_configure(side="left", padx=6, expand=True)
+        current_y = ValueBox(row, title="Current Y:", value=0)
+        current_y.pack_configure(side="left", padx=6, expand=True)
+        current_z = ValueBox(row, title="Current Z:", value=0)
+        current_z.pack_configure(side="left", padx=6, expand=True)
         btn_stop = ActionButton(row, text="Stop", on_action=self._on_stop_clicked)
-        btn_stop.pack_configure(side="left", padx=6,expand=True)  # put next to it
+        btn_stop.pack_configure(side="right", padx=6, expand=True)  # put next to it
+        btn_start = ActionButton(row, text="Start", on_action=self._on_start_clicked)
+        btn_start.pack_configure(side="right", padx=6, expand=True)  # override the auto-pack
+
 
         # Label filters
         filters = ttk.LabelFrame(left, text="Label filters", padding=(6, 4))
@@ -160,26 +167,22 @@ class MainPage(tk.Frame):
         btn_disconnect.pack_configure(side="left", padx=6, expand=True)
 
         pos = ttk.Frame(gcode); pos.pack(fill="x", padx=6, pady=4)
-        ttk.Label(pos, text="Current position").pack(side="left")
-        self.inp_x = TextInput(pos, label_text="X:", width=6, input_type="number"); self._tight_pack(self.inp_x, x=4, y=2)
-        self.inp_y = TextInput(pos, label_text="Y:", width=6, input_type="number"); self._tight_pack(self.inp_y, x=4, y=2)
-        self.inp_z = TextInput(pos, label_text="Z:", width=6, input_type="number"); self._tight_pack(self.inp_z, x=4, y=2)
-        self.inp_feed = TextInput(pos, label_text="Feedrate:", width=8, input_type="number"); self._tight_pack(self.inp_feed, x=4, y=2)
-        ActionButton(pos, text="Send", on_action=self._on_send_move)
-        ttk.Label(pos, text="").pack(side="left", expand=True)
-        ActionButton(pos, text="Home", on_action=self._on_home)
+        self.inp_x = TextInput(pos, label_text="X:", width=6, input_type="number")
+        self.inp_x.pack_configure(side="left", padx=6, expand=True)
+        self.inp_y = TextInput(pos, label_text="Y:", width=6, input_type="number")
+        self.inp_y.pack_configure(side="left", padx=6, expand=True)
+        self.inp_z = TextInput(pos, label_text="Z:", width=6, input_type="number")
+        self.inp_z.pack_configure(side="left", padx=6, expand=True)
+        self.inp_feed = TextInput(pos, label_text="Feedrate:", width=8, input_type="number")
+        self.inp_feed.pack_configure(side="left", padx=6, expand=True)
+        send_gcode = ActionButton(pos, text="Send", on_action=self._on_send_move)
+        send_gcode.pack_configure(side="left", padx=6, expand=True)
+        center_core = ActionButton(pos, text="Center-It", on_action=self._on_home)
+        center_core.pack_configure(side="left", padx=6, expand=True)
 
         line = ttk.Frame(gcode); line.pack(fill="x", padx=6, pady=(2, 6))
-        self.inp_gline = TextInput(line, label_text="", on_submit=self._on_send_line, width=48); self._tight_pack(self.inp_gline)
+        self.inp_gline = TextInput(line, label_text="Raw G-Code", on_submit=self._on_send_line, width=48); self._tight_pack(self.inp_gline)
         ActionButton(line, text="Send", on_action=self._on_send_line)
-
-        # --- G-code Logs ---
-        gclogs = ttk.LabelFrame(left, text="G-code Logs", padding=(6, 4))
-        gclogs.grid(row=3, column=0, sticky="nsew", padx=4, pady=(6, 0))
-        gclogs.columnconfigure(0, weight=1)
-
-        self.gcode_log = LogScreen(gclogs, logs=[], height=8, width=60)
-        # leave its own default pack
 
         # give left sections stretch
         left.rowconfigure(3, weight=1)
@@ -203,20 +206,21 @@ class MainPage(tk.Frame):
 
         self.cap = None
         self.preview = CameraPreview(holder, width=640, height=360, fps=30,
-                                     capture=self.cap, title="")
+                                     capture=self.cap)
         # Stop it from filling; center it
         try:
             self.preview.pack_configure(padx=0, pady=0, fill=None, expand=False)
         except tk.TclError:
             pass
 
-        # Python Logs group
-        pylog_group = ttk.LabelFrame(right, text="Python Logs", padding=(6, 4))
+        # Gcode|Python Logs group
+        pylog_group = ttk.LabelFrame(right, text="G-code | Python Logs", padding=(6, 4))
         pylog_group.grid(row=1, column=0, sticky="nsew", padx=4, pady=(6, 0))
-        self.py_log = LogScreen(pylog_group, logs=[
+        LogScreen(pylog_group, logs=[
             "16:16:30 - INFO - Loaded 2 labels from",
             r"C:\Dev\OFA-Tech\FiapAutoKraft\Console-ComputationalVision\models\coke_water_vision.pt"
         ], height=10, width=80)
+        LogScreen(pylog_group, logs=[], height=10, width=80)
 
         right.rowconfigure(1, weight=1)
 

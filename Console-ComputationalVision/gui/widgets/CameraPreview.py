@@ -8,7 +8,7 @@ from PIL import Image, ImageTk
 
 class CameraPreview(tk.Frame):
     def __init__(self, master, width=640, height=360, fps=30,
-                 capture: cv2.VideoCapture | None = None, title: str = "Preview", **kwargs):
+                 capture: cv2.VideoCapture | None = None, **kwargs):
         super().__init__(master, **kwargs)
         self._width_px, self._height_px = int(width), int(height)
         self._period_ms = max(1, int(1000 / max(1, int(fps))))
@@ -20,11 +20,7 @@ class CameraPreview(tk.Frame):
         self._tk_img = None
 
         # default layout
-        self.pack(padx=10, pady=10, fill="both", expand=True)
-
-        # header + image area
-        self._title_lbl = ttk.Label(self, text=title)
-        self._title_lbl.pack(anchor="w", pady=(0, 6))
+        self.pack(padx=5, pady=5, fill="both", expand=True)
 
         self._image_lbl = ttk.Label(self)
         self._image_lbl.pack(fill="both", expand=True)
@@ -50,8 +46,6 @@ class CameraPreview(tk.Frame):
     def get_capture(self):
         return self._cap
 
-    def set_title(self, title: str):
-        self._title_lbl.config(text=title)
 
     def start(self):
         """Start preview if capture is opened; otherwise show black."""
@@ -127,7 +121,7 @@ if __name__ == "__main__":
         cap0 = None  # simulate unavailable camera
 
     preview = CameraPreview(root, width=640, height=360, fps=30,
-                            capture=cap0, title="Camera 0")
+                            capture=cap0)
 
     # buttons just to play with it
     btns = ttk.Frame(root); btns.pack(pady=8)
