@@ -245,6 +245,9 @@ class VisionService:
         self,
         frame_callback: Optional[Callable[[np.ndarray], None]] = None,
         stop_event: Optional["threading.Event"] = None,
+        detection_callback: Optional[
+            Callable[[list[dict], tuple[int, int]], None]
+        ] = None,
     ) -> None:
         cap = _configure_camera(self.args)
         frame_count = 0
@@ -282,6 +285,16 @@ class VisionService:
                         self._selected_labels,
                     )
                     self._last_detections = detections_info
+                    if detection_callback is not None:
+                        frame_height, frame_width = frame.shape[:2]
+                        try:
+                            detection_callback(
+                                list(detections_info), (frame_width, frame_height)
+                            )
+                        except Exception:
+                            self.logger.exception(
+                                "Detection callback raised an exception."
+                            )
                     for detection in detections_info:
                         self.logger.info(
                             "Detection: %s conf=%.2f bbox=%s center=%s",

@@ -68,6 +68,13 @@ class CameraPreview(tk.Frame):
         self._latest_bgr = None
         self._show_black()
 
+    def display_frame(self, frame: np.ndarray) -> None:
+        """Display a frame provided externally (e.g., from a vision service)."""
+        if frame is None:
+            return
+        with self._lock:
+            self._latest_bgr = frame.copy()
+
     # --------------- internals ------------------
     def _reader_loop(self):
         while self._running and self._cap and self._cap.isOpened():
